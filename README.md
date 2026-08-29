@@ -1,89 +1,108 @@
 # BadgerInfeR
 
-Badger diagnostic HMM inference, wrapping the standalone `test2inf` binary
-instead of a Julia session. No Julia, no JuliaCall, no compilation at run time.
+R interface to the badger diagnostic HMM. Wraps the standalone `test2inf`
+binary; no Julia or compilation at run time.
 
-Restricted on purpose to the five model variants used in the badger project's
-sql-e2e bundles: all tests, no-DPP and culture-only panels, each with Se/Sp
-fixed at Table 1 values or inferred.
+## Install
 
 ```r
-library(BadgerInfeR)
-badger_platform()               # is a usable binary present?
-
-fit <- badger_hmm(test_matrix, model = "all_fixed", start_year = 1976,
-                  draws = 1000, warmup = 200, traj_draws = 200)
-fit$prevalence
+remotes::install_github("EvoArt/BadgerInfeR")
+BadgerInfeR::install_test2inf()   # downloads the binary for this platform
 ```
 
-## Portability: read this before assuming it will work
+`install_test2inf()` is called automatically on first use unless
+`BADGERINFER_NO_DOWNLOAD` is set. Prebuilt bundles exist for Windows x86-64,
+Linux x86-64, macOS arm64 and macOS x86-64. On any other platform, build from
+[test2inf-cli](https://github.com/EvoArt/test2inf-cli) and set `TEST2INF_BIN`.
 
-**The package is only as portable as the binary it wraps, and it does not ship
-one.** `install_github()` alone gives you a package that errors on first use
-with instructions, on every platform including Windows.
+## badger_hmm()
 
-Why: the bundle is ~23 MB per platform, and JuliaC has no cross-compilation, so
-a bundle must be **built on the platform it will run on**. As of now only a
-Windows x86-64 bundle has been built and tested.
+```r
+badger_hmm(test_mat,
+           model = "all_fixed",
+           method = c("hmc", "nuts", "map"),
+           draws = 1000L, warmup = 1000L, traj_draws = 0L,
+           metric = NULL, write_metric = NULL,
+           target_acc = 0.8, seed = 1L, seasons = 4L,
+           repeat_captures = c("stack", "pool", "last"),
+           year_process = c("rw1", "iid"),
+           penalty = TRUE, start_year = 0L,
+           workdir = tempfile("badgerinfer"), keep_workdir = FALSE)
+```
 
-| platform | status |
+| arg | |
 |---|---|
-| Windows x86-64 | built, tested, all results in this project produced with it |
-| Linux x86-64 | not built — `build.sh` should work there, untested |
-| macOS (Intel or ARM) | not built; also needs codesigning/notarisation, or Gatekeeper quarantines a downloaded binary |
+| `test_mat` | matrix/data frame: `time, id, captured, test1..test6`. `NA` = not tested. Rows with `captured == 0` optional. |
+| `model` | one of `badger_models()` |
+| `method` | `hmc` uses a pre-tuned dense metric; `nuts` adapts from scratch; `map` is the posterior mode |
+| `draws`, `warmup` | sampling iterations |
+| `traj_draws` | draws used for per-draw prevalence and infection times; `0` skips |
+| `metric` | path to an inverse mass matrix CSV, overrides the compiled-in one |
+| `write_metric` | path to write the metric used |
+| `target_acc` | NUTS target acceptance |
+| `seed` | RNG seed |
+| `seasons` | timesteps per year |
+| `repeat_captures` | how to treat multiple captures in one timestep |
+| `year_process` | `rw1` and `iid` are different models, not tuning options |
+| `penalty` | Se+Sp>1 identifiability penalty |
+| `start_year` | calendar year of `time == 1`; `0` omits calendar columns |
+| `workdir`, `keep_workdir` | scratch directory for the binary's I/O |
 
-To get a working install on a platform with no bundle:
+Returns an object of class `badger_fit`, a list of:
 
-1. clone the CLI source, install Julia 1.12+, run `test2inf-cli/build.sh`
-2. set `TEST2INF_BIN` to `dist/bin/test2inf` (or `test2inf.exe`)
+| element | |
+|---|---|
+| `parameters` | data frame; `estimate` (map) or `mean`/`sd` (sampling) |
+| `prevalence` | prevalence per timestep, `n_captures` |
+| `p_infected` | `id, time, p_infected` |
+| `year_effects` | `year_index, gamma, annual_hazard` |
+| `draws` | posterior draws, one column per parameter; `NULL` for map |
+| `prevalence_draws` | `time` + one column per draw; `NULL` unless `traj_draws > 0` |
+| `trajectories` | `id, draw, infection_time` (`0` = never); `NULL` unless `traj_draws > 0` |
+| `sesp` | `test, test_name, Se, Sp, Youden, estimated` |
+| `settings` | the arguments used |
+| `log` | binary stdout, including divergences and step size |
 
-Ship the **whole `dist/` directory**, not just the executable: the runtime
-libraries beside it are required.
-
-### Making it genuinely installable
-
-Not done yet. The realistic route, per the CLI's handover:
-
-- build bundles on each target platform (CI with Windows/Linux/macOS runners)
-- attach them to a GitHub release
-- have the package download the right one on first use into a user cache
-  (`tools::R_user_dir`), with a checksum check
-- codesign and notarise the macOS bundle
-
-Until that exists, treat this as an in-house package for machines that already
-have, or can build, a bundle.
-
-## Why it is fast
-
-Two things, both measured on the real cohort (3,224 badgers, 29,737 timepoints,
-58 parameters):
-
-- **an analytic gradient** compiled into the binary: 1.63 ms against Mooncake's
-  6.02 ms through Turing/DynamicPPL, and 29.5 ms through ForwardDiff
-- **pre-tuned dense mass matrices** per model variant, so no adaptation happens
-  at run time: 30 s for 1000 draws against 431 s for NUTS adapting from scratch
-
-End to end, the five-model sql-e2e bundle went from about an hour per model to
-3m11s for all five.
-
-The pre-tuned metrics are specific to the badger cohort. On other data either
-use `method = "nuts"` (adapts from scratch, always correct) or tune once and
-reuse:
+`method = "hmc"` falls back to `nuts` with a warning when the compiled metric
+does not match the supplied data. To use HMC on other data:
 
 ```r
 a <- badger_hmm(m, "all_fixed", "nuts", write_metric = "metric.csv")
 b <- badger_hmm(m, "all_fixed", "hmc",  metric = "metric.csv")
 ```
 
-If a pre-tuned metric does not fit your data, `method = "hmc"` warns and falls
-back to NUTS rather than failing.
+## Other functions
 
-## Model variants
+| | |
+|---|---|
+| `badger_models(labels = FALSE)` | the five model names; `labels = TRUE` gives display names |
+| `badger_label(model)` | display name for a model key |
+| `badger_binary()` | path to the executable |
+| `check_badger_binary()` | error if it does not run |
+| `badger_platform()` | print OS, arch, and whether a binary was found |
+| `badger_platform_tag()` | platform string used for release assets |
+| `badger_cache_dir()` | where downloaded bundles are kept |
+| `install_test2inf(tag = "latest", force = FALSE, quiet = FALSE)` | download and install the binary |
 
-`all_fixed`, `all_inferred`, `culture_only_fixed`, `no_dpp_fixed`,
-`no_dpp_inferred`. Culture-only with inferred Se/Sp is deliberately absent: it
-is not identifiable, and which of the two modes the optimiser finds depends only
-on the seed.
+`BADGER_TESTS`, `BADGER_SE`, `BADGER_SP`: test names and Table 1 values, in
+column order.
 
-The year-effect process defaults to `"rw1"`, matching `test2infeR`'s default and
-every published sql-e2e fit. `"iid"` is a different model, not a tuning option.
+## Models
+
+| key | tests | Se/Sp |
+|---|---|---|
+| `all_fixed` | all six | fixed |
+| `all_inferred` | all six | inferred |
+| `culture_only_fixed` | Culture | fixed |
+| `no_dpp_fixed` | not DPP | fixed |
+| `no_dpp_inferred` | not DPP | inferred |
+
+Culture-only with inferred Se/Sp is not offered: it is not identifiable.
+
+## Environment variables
+
+| | |
+|---|---|
+| `TEST2INF_BIN` | path to the executable, overrides all lookup |
+| `BADGERINFER_CACHE` | where to keep downloaded bundles |
+| `BADGERINFER_NO_DOWNLOAD` | never download automatically |
