@@ -1,9 +1,10 @@
 # Getting a platform-appropriate binary onto the user's machine.
 #
-# The bundle is ~23 MB per platform and JuliaC cannot cross-compile, so one
-# bundle per platform is built by CI and attached to a GitHub release. The
-# package itself ships no binary; it fetches the right one on first use into a
-# user cache directory.
+# The bundle is ~115 MB per platform (the whole Julia runtime; trimming it
+# safely needs the transitive closure of the import graph, which nothing here
+# computes) and JuliaC cannot cross-compile, so one bundle per platform is
+# built by CI and attached to a GitHub release. The package itself ships no
+# binary; it fetches the right one on first use into a user cache directory.
 
 TEST2INF_RELEASE_TAG <- "latest"
 TEST2INF_REPO <- "EvoArt/test2inf-cli"
@@ -19,7 +20,10 @@ badger_platform_tag <- function() {
   arm <- grepl("aarch64|arm64", arch, ignore.case = TRUE)
   if (sysname == "Windows") return("windows-x86_64")
   if (sysname == "Linux")   return(if (arm) NA_character_ else "linux-x86_64")
-  if (sysname == "Darwin")  return(if (arm) "macos-arm64" else "macos-x86_64")
+  # Intel macOS has no prebuilt bundle: GitHub's macos-13 runner never
+  # started, so CI cannot produce one. Report it as unsupported rather than
+  # hand back an ARM tag that would download a bundle this machine cannot run.
+  if (sysname == "Darwin")  return(if (arm) "macos-arm64" else NA_character_)
   NA_character_
 }
 

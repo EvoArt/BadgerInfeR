@@ -12,7 +12,8 @@ BadgerInfeR::install_test2inf()   # downloads the binary for this platform
 
 `install_test2inf()` is called automatically on first use unless
 `BADGERINFER_NO_DOWNLOAD` is set. Prebuilt bundles exist for Windows x86-64,
-Linux x86-64, macOS arm64 and macOS x86-64. On any other platform, build from
+Linux x86-64 and macOS arm64. On any other platform — including Intel macOS,
+whose CI runner is being retired — build from
 [test2inf-cli](https://github.com/EvoArt/test2inf-cli) and set `TEST2INF_BIN`.
 
 ## badger_hmm()
