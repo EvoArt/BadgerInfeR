@@ -26,7 +26,7 @@ badger_hmm(test_mat,
            metric = NULL, write_metric = NULL,
            target_acc = 0.8, seed = 1L, seasons = 4L,
            repeat_captures = c("stack", "pool", "last"),
-           year_process = c("rw1", "iid"),
+           year_process = c("rw1", "iid", "rw2", "none", "shrunk"),
            penalty = TRUE, start_year = 0L,
            workdir = tempfile("badgerinfer"), keep_workdir = FALSE)
 ```
@@ -44,7 +44,7 @@ badger_hmm(test_mat,
 | `seed` | RNG seed |
 | `seasons` | timesteps per year |
 | `repeat_captures` | how to treat multiple captures in one timestep |
-| `year_process` | `rw1` and `iid` are different models, not tuning options |
+| `year_process` | `rw1`, `iid`, `rw2`, `none`, `shrunk` — different models, not tuning options. `ar1` is unavailable (it adds a parameter). |
 | `penalty` | Se+Sp>1 identifiability penalty |
 | `start_year` | calendar year of `time == 1`; `0` omits calendar columns |
 | `workdir`, `keep_workdir` | scratch directory for the binary's I/O |

@@ -39,8 +39,14 @@
 #' @param seasons Timesteps per year.
 #' @param repeat_captures How to treat multiple captures in one timestep:
 #'   `"stack"`, `"pool"` or `"last"`.
-#' @param year_process `"rw1"` (the default, and what every sql-e2e fit used) or
-#'   `"iid"`. These are different models, not tuning options.
+#' @param year_process `"rw1"` (the default, and what every sql-e2e fit used),
+#'   `"iid"`, `"rw2"`, `"none"` or `"shrunk"`. These are different models, not
+#'   tuning options: each carries its own `sigma_g` prior (rw1 0.05, rw2 0.01,
+#'   shrunk 0.10, iid and none 0.30), and the pre-tuned HMC metrics are valid
+#'   only for the process they were tuned under.
+#'
+#'   `test2infeR`'s `"ar1"` is not available here: it adds a `rho` parameter
+#'   that changes the parameter-vector layout.
 #' @param penalty Apply the Se+Sp>1 identifiability penalty.
 #' @param start_year Calendar year of `time == 1`, used to label year outputs.
 #'   0 means "unknown", and calendar columns are omitted.
@@ -64,7 +70,7 @@ badger_hmm <- function(test_mat,
                        seed = 1L,
                        seasons = 4L,
                        repeat_captures = c("stack", "pool", "last"),
-                       year_process = c("rw1", "iid"),
+                       year_process = c("rw1", "iid", "rw2", "none", "shrunk"),
                        penalty = TRUE,
                        start_year = 0L,
                        workdir = tempfile("badgerinfer"),
