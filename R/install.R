@@ -60,9 +60,17 @@ install_test2inf <- function(tag = TEST2INF_RELEASE_TAG, force = FALSE,
   }
 
   exe_name <- if (.Platform$OS.type == "windows") "test2inf.exe" else "test2inf"
-  dest <- file.path(badger_cache_dir(), plat)
+  # Cache per RELEASE TAG, not just per platform. Keying on platform alone
+  # meant an existing binary was reused whatever release it came from, so
+  # upgrading silently kept the old one -- which hid a fix for a binary that
+  # would not start on some CPUs. "latest" gets its own slot and is always
+  # re-fetched, since its contents change without the key changing.
+  dest <- file.path(badger_cache_dir(), paste0(plat, "-", tag))
   exe <- file.path(dest, "bin", exe_name)
-  if (!force && file.exists(exe)) return(invisible(normalizePath(exe)))
+  stale <- identical(tag, "latest")
+  if (!force && !stale && file.exists(exe)) {
+    return(invisible(normalizePath(exe)))
+  }
 
   base <- if (identical(tag, "latest")) {
     sprintf("https://github.com/%s/releases/latest/download", TEST2INF_REPO)

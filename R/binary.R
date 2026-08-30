@@ -30,11 +30,19 @@ badger_binary <- function() {
   dev <- file.path(getwd(), "dist", "bin", exe_name)
   if (file.exists(dev)) return(normalizePath(dev))
 
-  # A bundle downloaded by install_test2inf() on a previous run.
+  # A bundle downloaded by install_test2inf() on a previous run. Cache
+  # directories are named "<platform>-<tag>"; prefer the most recently written,
+  # so an upgrade takes effect without the user clearing anything.
   plat <- badger_platform_tag()
   if (!is.na(plat)) {
-    cached <- file.path(badger_cache_dir(), plat, "bin", exe_name)
-    if (file.exists(cached)) return(normalizePath(cached))
+    root <- badger_cache_dir()
+    hits <- list.files(root, pattern = paste0("^", plat, "-"), full.names = TRUE)
+    hits <- file.path(hits, "bin", exe_name)
+    hits <- hits[file.exists(hits)]
+    if (length(hits) > 0) {
+      newest <- hits[which.max(file.mtime(hits))]
+      return(normalizePath(newest))
+    }
   }
 
   # Nothing local: fetch the bundle built for this platform, unless the user
