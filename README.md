@@ -21,7 +21,7 @@ whose CI runner is being retired — build from
 ```r
 badger_hmm(test_mat,
            model = "fixed",
-           method = c("nutsthenhmc", "nuts", "map", "hmc"),
+           method = c("nuts", "nutsthenhmc", "map", "hmc"),
            draws = 1000L, warmup = 1000L, traj_draws = 0L,
            metric = NULL, write_metric = NULL,
            target_acc = 0.8, seed = 1L, chains = 1L, cores = NULL,
@@ -38,7 +38,7 @@ badger_hmm(test_mat,
 |---|---|
 | `test_mat` | matrix/data frame: `time, id, captured, test1..test6`. `NA` = not tested. Rows with `captured == 0` optional. |
 | `model` | one of `badger_models()` |
-| `method` | `nutsthenhmc` adapts with NUTS then draws with fixed-L HMC; `nuts` is pure NUTS; `map` is the posterior mode; `hmc` is fixed-L HMC and requires `metric` |
+| `method` | see Samplers below |
 | `draws`, `warmup` | sampling iterations |
 | `traj_draws` | draws used for per-draw prevalence and infection times; `0` skips |
 | `metric` | path to an inverse mass matrix CSV |
@@ -76,13 +76,12 @@ increment prior), so they do not describe the current posterior. Tune once and
 reuse:
 
 ```r
-a <- badger_hmm(m, "fixed", "nutsthenhmc", write_metric = "metric.csv")
-b <- badger_hmm(m, "fixed", "hmc",         metric = "metric.csv")
+a <- badger_hmm(m, "fixed", "nuts", write_metric = "metric.csv")
+b <- badger_hmm(m, "fixed", "hmc",  metric = "metric.csv")
 ```
 
-The default `nutsthenhmc` needs none of this — it adapts to whatever data it
-is given. On the badger cohort, 1000 draws after 1000 warmup iterations takes
-about 2m20s per chain.
+The default `nuts` needs none of this — it adapts to whatever data it is
+given.
 
 ## Other functions
 
@@ -130,18 +129,28 @@ Asking for one by name is an error, not a silent substitution.
 
 `rw1c` plus the data-adaptive increment prior, both on by default.
 
-Plain `rw1` leaves the **level** of the year series unidentified, so years
-with no test data drift and the walk extrapolates backwards from the first
-year that has any. `rw1c` centres the series so the level is carried by the
-seasonal intercepts instead; the increment prior then shrinks each
-year-to-year step in proportion to how little data informs it, pinning an
-untested year to its neighbour while leaving well-tested years to the
-likelihood.
+Plain `rw1` leaves the **level** of the year series unidentified, so untested
+years drift and the walk extrapolates backwards from the first year with data.
+`rw1c` centres the series, handing the level to the seasonal intercepts; the
+increment prior then pins an untested year to its neighbour while leaving
+well-tested years to the likelihood.
 
-These fix an identifiability problem; they do not push early hazards toward
-zero, and they should not. 1976–77 were tested by culture alone, whose
-sensitivity is 0.10, so a run of negatives from those years is weak evidence
-and some residual hazard is honest.
+This fixes identifiability; it does not push early hazards toward zero, and
+should not — 1976–77 were tested by culture alone (Se = 0.10), so some
+residual early hazard is honest.
+
+## Samplers
+
+| method | | |
+|---|---|---|
+| `nuts` | default | 142 s, min ESS 843 / 1000 draws |
+| `nutsthenhmc` | NUTS adapts, jittered-L HMC draws | 99 s, min ESS 46 |
+| `map` | constrained-scale mode, as Turing | 9 s, no uncertainty |
+| `hmc` | fixed L, needs `metric` | |
+
+Measured on the badger cohort, 1000 draws after 1000 warmup. `nutsthenhmc` is
+quicker per iteration and about a thirteenth the effective draws per second;
+acceptance and divergences look healthy either way, so only ESS shows it.
 
 ## Environment variables
 

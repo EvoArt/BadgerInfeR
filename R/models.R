@@ -1,18 +1,11 @@
-# The four model variants, named once so scripts cannot drift apart.
+# The four model variants, named once so scripts cannot drift apart. These are
+# the fits in `identify differences/the case`. All four share the same
+# quarterly grid, stacked captures and rw1c+yw year model, so what differs
+# between them is the accuracy assumption and nothing else.
 #
-# These are the fits in `identify differences/the case`: fixed or inferred
-# test accuracy, each with culture specificity either free or pinned to one.
-# All four share the same quarterly grid, stacked within-quarter captures and
-# `rw1c` + data-adaptive year model; those were held constant deliberately, so
-# that what differs between the four is the accuracy assumption and nothing
-# else.
-#
-# The earlier five-variant set (all_fixed, all_inferred, culture_only_fixed,
-# no_dpp_fixed, no_dpp_inferred) is superseded and has been removed. Those
-# fits used plain `rw1`, which leaves the level of the year series
-# unidentified, and Beta accuracy priors, whose shape floor distorts the
-# requested moments. Anything still reading those names wants the archived
-# outputs, not a fresh fit.
+# The earlier five (all_fixed, all_inferred, culture_only_fixed, no_dpp_fixed,
+# no_dpp_inferred) are superseded: plain rw1 leaves the year series' level
+# unidentified, and Beta accuracy priors distort the requested moments.
 
 #' Test names, in the column order the model expects
 #' @export
@@ -21,8 +14,7 @@ BADGER_TESTS <- c("ELISA_BELT", "ELISA_INDIRECT", "Culture", "DPP",
 
 #' Table 1 sensitivity values, in `BADGER_TESTS` order
 #'
-#' Used directly when accuracy is fixed, and as the prior MEDIAN when it is
-#' inferred.
+#' Used directly when accuracy is fixed, and as the prior median when inferred.
 #' @export
 BADGER_SE <- c(0.407, 0.407, 0.100, 0.650, 0.809, 0.492)
 
@@ -32,9 +24,7 @@ BADGER_SP <- c(0.943, 0.943, 0.999, 0.943, 0.936, 0.931)
 
 #' Index of the culture assay within [BADGER_TESTS]
 #'
-#' Named rather than written as a bare `3`, because pinning the wrong assay's
-#' specificity would be a silent error: the fit would succeed and mean
-#' something different.
+#' Named rather than a bare `3`: pinning the wrong assay would fit silently.
 #' @export
 BADGER_CULTURE <- 3L
 
@@ -55,19 +45,9 @@ BADGER_CULTURE <- 3L
 
 #' The supported model variants
 #'
-#' Four fits differing only in how test accuracy is treated:
-#'
-#' \describe{
-#'   \item{`fixed`}{Sensitivity and specificity held at the Table 1 values.
-#'     The main comparator, and the default.}
-#'   \item{`fixed_cult1`}{As `fixed`, but culture specificity is one. This is
-#'     the carry-forward assumption -- that a culture positive is never a false
-#'     positive -- stated inside the model rather than imposed on the data.}
-#'   \item{`inferred`}{Accuracy estimated, with logit-normal priors centred on
-#'     the Table 1 values as medians.}
-#'   \item{`inferred_cult1`}{As `inferred`, but culture specificity pinned to
-#'     one, so it is no longer a parameter at all.}
-#' }
+#' Four fits differing only in how test accuracy is treated: `fixed`,
+#' `fixed_cult1`, `inferred`, `inferred_cult1`. The `cult1` pair pin culture
+#' specificity to one.
 #'
 #' @param labels If `TRUE`, return the display names rather than the keys.
 #' @return A character vector of model names.

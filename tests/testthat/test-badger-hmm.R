@@ -21,31 +21,37 @@ test_that("the model list is exactly the four current variants", {
   # The superseded names must fail with an explanation, not a bare "unknown":
   # a script still asking for one wants archived output, not a fresh fit under
   # a different model that happens to share the name.
-  expect_error(badger_hmm(matrix(0, 1, 9), model = "fixed"), "superseded")
+  expect_error(badger_hmm(matrix(0, 1, 9), model = "all_fixed"), "superseded")
 })
 
 test_that("the defaults are the current model and sampler", {
   fml <- formals(badger_hmm)
   expect_equal(fml$model, "fixed")
-  expect_equal(eval(fml$method)[1], "nutsthenhmc")
+  expect_equal(eval(fml$method)[1], "nuts")
   expect_equal(eval(fml$year_process)[1], "rw1c")
   expect_true(fml$year_weight)
   expect_equal(eval(fml$accuracy_prior)[1], "logitnormal")
 })
 
-test_that("hmc refuses to run on a stale compiled-in metric", {
-  # The pre-tuned metrics belong to the superseded variants. Sampling with one
+test_that("hmc refuses to run on stale compiled-in constants", {
+  # The pre-tuned values belong to the superseded variants. Sampling with one
   # would not fail, it would sample badly and quietly, so the package declines
-  # to ask for it.
-  expect_error(badger_hmm(matrix(0, 1, 9), "fixed", "hmc"), "needs a `metric`")
+  # to ask for it -- and hmc adapts nothing, so a metric alone is not enough.
+  # A VALID matrix: the refusal has to come from the method check, not from
+  # input validation, or the test would pass for the wrong reason.
+  m <- matrix(1, 2, 9); m[, 1] <- c(1, 2)
+  expect_error(badger_hmm(m, "fixed", "hmc"), "adapts nothing")
+  expect_error(badger_hmm(m, "fixed", "hmc", metric = "m.csv"),
+               "adapts nothing")
 })
 
 test_that("the test matrix is validated before the binary is invoked", {
-  expect_error(write_test_matrix(matrix(0, 2, 3), tempfile()), "at least 9")
+  wtm <- BadgerInfeR:::write_test_matrix
+  expect_error(wtm(matrix(0, 2, 3), tempfile()), "at least 9")
   bad <- matrix(1, 2, 9); bad[1, 3] <- 7
-  expect_error(write_test_matrix(bad, tempfile()), "captured")
+  expect_error(wtm(bad, tempfile()), "captured")
   bad2 <- matrix(1, 2, 9); bad2[1, 1] <- 0
-  expect_error(write_test_matrix(bad2, tempfile()), "positive integer")
+  expect_error(wtm(bad2, tempfile()), "positive integer")
 })
 
 test_that("NA test results survive the round trip as empty fields", {
@@ -53,7 +59,7 @@ test_that("NA test results survive the round trip as empty fields", {
   m[, 1] <- c(1, 2); m[, 2] <- 1; m[, 3] <- 1
   m[1, 4] <- NA
   p <- tempfile(fileext = ".csv")
-  write_test_matrix(m, p)
+  BadgerInfeR:::write_test_matrix(m, p)
   txt <- readLines(p)
   expect_true(grepl(",,", txt[2]) || grepl(",$", txt[2]))
 })
@@ -149,24 +155,24 @@ test_that("a metric can be exported and reused, without a rebuild", {
   expect_equal(nrow(metric), ncol(a$draws))
   expect_true(all(diag(metric) > 0))
 
-  # With a metric that DOES fit, hmc runs and no fallback happens.
+  # Replayed under hmc, with the step size and length supplied alongside.
   b <- badger_hmm(m, "fixed", "hmc", draws = 100, warmup = 100,
-                  metric = mf, seed = 4)
+                  metric = mf, step_size = 0.1, n_leapfrog = 10, seed = 4)
   expect_equal(nrow(b$draws), 100)
   expect_equal(b$settings$metric, mf)
   expect_equal(b$settings$method, "hmc")
 
-  expect_error(badger_hmm(m, "fixed", "hmc", metric = "no_such_file.csv"),
+  expect_error(badger_hmm(m, "fixed", "hmc", metric = "no_such_file.csv",
+                          step_size = 0.1, n_leapfrog = 10),
                "metric file not found")
 })
 
 test_that("the default method samples without any pre-tuned constants", {
-  # nutsthenhmc adapts the step size and metric during warmup and then draws
-  # with them, so it works on any data with nothing compiled in. There is no
-  # fallback path any more, and no warning: the default simply runs.
+  # nuts adapts from scratch, so it works on any data with nothing compiled in.
+  # There is no fallback path any more, and no warning: the default just runs.
   have_binary(); m <- test_data()
   f <- expect_no_warning(badger_hmm(m, "fixed", draws = 50, warmup = 50))
-  expect_equal(f$settings$method, "nutsthenhmc")
+  expect_equal(f$settings$method, "nuts")
   expect_equal(nrow(f$draws), 50)
 })
 
