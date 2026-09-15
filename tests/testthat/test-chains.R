@@ -72,7 +72,7 @@ test_that("chains must be a positive integer and map refuses to fan out", {
 
 test_that("chains = 1 returns exactly the single-chain object", {
   have_binary(); m <- test_data()
-  fit <- badger_hmm(m, "all_fixed", "nuts", draws = 50, warmup = 50, seed = 3)
+  fit <- badger_hmm(m, "fixed", "nuts", draws = 50, warmup = 50, seed = 3)
   expect_s3_class(fit, "badger_fit")
   expect_equal(fit$settings$chains, 1L)
   # No chain column and no pooling machinery on the single-chain path.
@@ -82,7 +82,7 @@ test_that("chains = 1 returns exactly the single-chain object", {
 
 test_that("four chains pool their draws and carry convergence diagnostics", {
   have_binary(); m <- test_data()
-  fit <- badger_hmm(m, "all_fixed", "nuts", draws = 100, warmup = 100,
+  fit <- badger_hmm(m, "fixed", "nuts", draws = 100, warmup = 100,
                     seed = 1, chains = 4)
   expect_s3_class(fit, "badger_fit")
   expect_equal(nrow(fit$draws), 400)
@@ -99,7 +99,7 @@ test_that("four chains pool their draws and carry convergence diagnostics", {
 
 test_that("chains differ from one another but agree on the posterior", {
   have_binary(); m <- test_data()
-  fit <- badger_hmm(m, "all_fixed", "nuts", draws = 200, warmup = 200,
+  fit <- badger_hmm(m, "fixed", "nuts", draws = 200, warmup = 200,
                     seed = 1, chains = 4)
   pars <- setdiff(names(fit$draws), "chain")
   p <- pars[which.max(vapply(fit$draws[pars], stats::sd, numeric(1)))]
@@ -116,10 +116,10 @@ test_that("running four chains beats running them one after another", {
   # The binary is single-threaded, so concurrency is the only mechanism; if
   # this ever stops holding, the feature has silently become pointless.
   t_par <- system.time(
-    badger_hmm(m, "all_fixed", "nuts", draws = 200, warmup = 200,
+    badger_hmm(m, "fixed", "nuts", draws = 200, warmup = 200,
                seed = 1, chains = 4))[["elapsed"]]
   t_ser <- system.time(
-    badger_hmm(m, "all_fixed", "nuts", draws = 200, warmup = 200,
+    badger_hmm(m, "fixed", "nuts", draws = 200, warmup = 200,
                seed = 1, chains = 4, cores = 1))[["elapsed"]]
   expect_lt(t_par, t_ser)
 })

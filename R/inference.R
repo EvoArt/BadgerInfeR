@@ -34,8 +34,8 @@
 #'   per-chain logs. `chains = 1` returns exactly what it always did.
 #' @export
 badger_hmm <- function(test_mat,
-                       model = "all_fixed",
-                       method = c("hmc", "nuts", "map"),
+                       model = "fixed",
+                       method = c("nutsthenhmc", "nuts", "map", "hmc"),
                        draws = 1000L,
                        warmup = 1000L,
                        traj_draws = 0L,
@@ -47,7 +47,10 @@ badger_hmm <- function(test_mat,
                        cores = NULL,
                        seasons = 4L,
                        repeat_captures = c("stack", "pool", "last"),
-                       year_process = c("rw1", "iid", "rw2", "none", "shrunk"),
+                       year_process = c("rw1c", "rw1", "iid", "rw2", "none",
+                                        "shrunk"),
+                       year_weight = TRUE,
+                       accuracy_prior = c("logitnormal", "beta"),
                        penalty = TRUE,
                        start_year = 0L,
                        workdir = tempfile("badgerinfer"),
@@ -55,6 +58,7 @@ badger_hmm <- function(test_mat,
   method <- match.arg(method)
   repeat_captures <- match.arg(repeat_captures)
   year_process <- match.arg(year_process)
+  accuracy_prior <- match.arg(accuracy_prior)
   chains <- as.integer(chains)
   if (is.na(chains) || chains < 1L) stop("`chains` must be a positive integer.")
 
@@ -72,6 +76,7 @@ badger_hmm <- function(test_mat,
                metric = metric, write_metric = write_metric,
                target_acc = target_acc, seasons = seasons,
                repeat_captures = repeat_captures, year_process = year_process,
+               year_weight = year_weight, accuracy_prior = accuracy_prior,
                penalty = penalty, start_year = start_year,
                keep_workdir = keep_workdir)
 
@@ -135,22 +140,32 @@ badger_hmm <- function(test_mat,
 #'   columns must be in [BADGER_TESTS] order. `NA` means "not tested".
 #'   Rows with `captured == 0` are optional: each badger is expanded onto the
 #'   full timestep grid between its first and last capture either way.
-#' @param model One of [badger_models()].
-#' @param method `"hmc"` (default), `"nuts"` or `"map"`.
+#' @param model One of [badger_models()]. Defaults to `"fixed"` -- accuracy
+#'   held at the Table 1 values, which is the main comparator.
+#' @param method `"nutsthenhmc"` (default), `"nuts"`, `"map"` or `"hmc"`.
 #'
-#'   `"hmc"` runs fixed-length HMC with the step size, trajectory length and
-#'   **dense** mass matrix tuned offline for this exact model variant and
-#'   compiled into the binary. On the badger cohort that samples ~8x more
-#'   effective draws per second than adapting a diagonal metric from scratch,
-#'   because the dense metric removes the funnel that rw1's `cumsum` creates:
-#'   it steps at eps ~0.3 rather than ~0.047. Adaptation is not repeated.
+#'   `"nutsthenhmc"` is the default for full posterior sampling. NUTS adapts
+#'   the step size and metric during warmup; fixed-length HMC then draws with
+#'   them, skipping the tree building NUTS pays on every draw. The trajectory
+#'   length comes from NUTS's own mean tree depth. Nothing is pre-tuned, so it
+#'   is safe on any data. On the badger cohort, 1000 draws after 1000 warmup
+#'   iterations takes about 2m20s per chain.
 #'
-#'   The tuned values are specific to the cohort they were tuned on. Only the
-#'   parameter count is checked, so pointing them at a very different dataset
-#'   samples badly rather than failing. For other data either use `"nuts"`,
-#'   which adapts from scratch and is always safe, or tune once and reuse:
-#'   run with `write_metric =` under `"nuts"`, then pass that file as `metric =`
-#'   to subsequent `"hmc"` runs. No rebuild and no Julia required.
+#'   `"nuts"` is pure NUTS throughout: slower, and the one to compare against
+#'   when a sampler looks wrong.
+#'
+#'   `"map"` is a point estimate by L-BFGS. It maximises the density on the
+#'   **constrained** scale, matching Turing's `maximum_a_posteriori`, so it
+#'   reproduces the reference fits. Note that a MAP estimate is not a posterior
+#'   summary: it reports no uncertainty, and for a positive-constrained
+#'   variance such as `sigma_g` the mode and the posterior mean differ
+#'   materially (0.244 against 0.172 on this cohort).
+#'
+#'   `"hmc"` is fixed-length HMC and now **requires** an explicit `metric`.
+#'   The metrics compiled into the binary were tuned for the superseded model
+#'   variants -- plain `rw1`, Beta priors, no increment prior -- so they do not
+#'   describe the current posterior. To use it, tune once with `write_metric =`
+#'   under `"nuts"` or `"nutsthenhmc"`, then pass that file back as `metric =`.
 #' @param metric Optional path to an inverse mass matrix CSV, overriding the
 #'   compiled-in metric for `model`. Headerless: `n` rows of `n` values, or a
 #'   single row/column of `n` values for a diagonal metric.
@@ -164,14 +179,38 @@ badger_hmm <- function(test_mat,
 #' @param seasons Timesteps per year.
 #' @param repeat_captures How to treat multiple captures in one timestep:
 #'   `"stack"`, `"pool"` or `"last"`.
-#' @param year_process `"rw1"` (the default, and what every sql-e2e fit used),
-#'   `"iid"`, `"rw2"`, `"none"` or `"shrunk"`. These are different models, not
-#'   tuning options: each carries its own `sigma_g` prior (rw1 0.05, rw2 0.01,
-#'   shrunk 0.10, iid and none 0.30), and the pre-tuned HMC metrics are valid
-#'   only for the process they were tuned under.
+#' @param year_process `"rw1c"` (the default), `"rw1"`, `"iid"`, `"rw2"`,
+#'   `"none"` or `"shrunk"`. These are different models, not tuning options:
+#'   each carries its own `sigma_g` prior (rw1 and rw1c 0.05, rw2 0.01, shrunk
+#'   0.10, iid and none 0.30).
 #'
-#'   `test2infeR`'s `"ar1"` is not available here: it adds a `rho` parameter
-#'   that changes the parameter-vector layout.
+#'   `"rw1c"` is `rw1` constrained to sum to zero. Plain `rw1` leaves the
+#'   **level** of the year series unidentified -- `gamma[1]` is free and every
+#'   later year is an increment from it -- so years with no test data drift,
+#'   and the walk extrapolates backwards from the first year that does have
+#'   data. Centring makes `gamma` a pure deviation series and hands the level
+#'   to `alpha`, which its own prior and every capture in the study anchor.
+#'
+#'   `ar1` is not available here: it adds a `rho` parameter that changes the
+#'   parameter-vector layout.
+#' @param year_weight Apply the data-adaptive year-increment prior (default
+#'   `TRUE`). Each year-to-year step is shrunk in proportion to how little test
+#'   data informs it, so a year with no tests is pinned to its neighbour while
+#'   well-tested years are left to the likelihood. Together with `"rw1c"` this
+#'   is what stops sparsely tested early years inheriting the level of the
+#'   better-tested ones. It does not pull hazards toward zero, and it should
+#'   not: 1976-77 were tested by culture alone, whose sensitivity is 0.10, so
+#'   some residual early hazard is honest rather than an artefact.
+#' @param accuracy_prior `"logitnormal"` (default) or `"beta"`. Only used when
+#'   the model infers Se/Sp.
+#'
+#'   Under `"logitnormal"` each Table 1 value is the prior **median** and the
+#'   density vanishes at both probability boundaries. Under `"beta"` the shape
+#'   parameters are floored at 0.5, which both distorts the requested moments
+#'   -- culture specificity asks for a mean of 0.999 and gets `Beta(3.26, 0.5)`,
+#'   whose mean is 0.867 -- and makes the density diverge at the boundary, so
+#'   there is no interior maximum. `method = "map"` refuses a free Beta prior
+#'   for that reason.
 #' @param penalty Apply the Se+Sp>1 identifiability penalty.
 #' @param start_year Calendar year of `time == 1`, used to label year outputs.
 #'   0 means "unknown", and calendar columns are omitted.
@@ -184,8 +223,8 @@ badger_hmm <- function(test_mat,
 #'   `settings` and `log`. Sampling-only outputs are `NULL` under `method = "map"`.
 #' @keywords internal
 badger_hmm_one <- function(test_mat,
-                       model = "all_fixed",
-                       method = c("hmc", "nuts", "map"),
+                       model = "fixed",
+                       method = c("nutsthenhmc", "nuts", "map", "hmc"),
                        draws = 1000L,
                        warmup = 1000L,
                        traj_draws = 0L,
@@ -195,7 +234,10 @@ badger_hmm_one <- function(test_mat,
                        seed = 1L,
                        seasons = 4L,
                        repeat_captures = c("stack", "pool", "last"),
-                       year_process = c("rw1", "iid", "rw2", "none", "shrunk"),
+                       year_process = c("rw1c", "rw1", "iid", "rw2", "none",
+                                        "shrunk"),
+                       year_weight = TRUE,
+                       accuracy_prior = c("logitnormal", "beta"),
                        penalty = TRUE,
                        start_year = 0L,
                        workdir = tempfile("badgerinfer"),
@@ -203,11 +245,8 @@ badger_hmm_one <- function(test_mat,
   method <- match.arg(method)
   repeat_captures <- match.arg(repeat_captures)
   year_process <- match.arg(year_process)
+  accuracy_prior <- match.arg(accuracy_prior)
   spec <- resolve_model(model)
-
-  if (identical(model, "culture_only_fixed") && isTRUE(spec$infer_sesp)) {
-    stop("culture-only with inferred Se/Sp is not identifiable.")  # defensive
-  }
 
   dir.create(workdir, recursive = TRUE, showWarnings = FALSE)
   if (!keep_workdir) on.exit(unlink(workdir, recursive = TRUE), add = TRUE)
@@ -222,17 +261,40 @@ badger_hmm_one <- function(test_mat,
             "--repeat", repeat_captures,
             "--year-process", year_process,
             "--seed", seed)
-  if (!is.null(spec$tests)) {
-    args <- c(args, "--tests", paste(spec$tests, collapse = ","))
+  if (!isTRUE(year_weight))    args <- c(args, "--no-year-weight")
+  if (isTRUE(spec$infer_sesp)) {
+    args <- c(args, "--infer-sesp",
+              "--accuracy-prior", accuracy_prior)
   }
-  if (isTRUE(spec$infer_sesp)) args <- c(args, "--infer-sesp")
+  # A pinned specificity works in both accuracy modes: with Se/Sp inferred the
+  # assay stops being a parameter, and with them fixed the pin overrides that
+  # assay's Table 1 value.
+  if (!is.null(spec$sp_pin)) {
+    args <- c(args, "--pin-sp",
+              sprintf("%d=%s", as.integer(spec$sp_pin[1]),
+                      format(spec$sp_pin[2], digits = 15)))
+  }
   if (!isTRUE(penalty))        args <- c(args, "--no-penalty")
-  if (method %in% c("nuts", "hmc")) {
+  if (method %in% c("nuts", "hmc", "nutsthenhmc")) {
     args <- c(args, "--draws", draws, "--warmup", warmup)
     if (traj_draws > 0L) args <- c(args, "--traj-draws", traj_draws)
   }
-  if (method == "nuts") args <- c(args, "--accept", target_acc)
-  if (method == "hmc")  args <- c(args, "--model", model)
+  if (method %in% c("nuts", "nutsthenhmc")) {
+    args <- c(args, "--accept", target_acc)
+  }
+  # `--model` selects a compiled-in pre-tuned metric, and the stored sets were
+  # tuned for the superseded five-variant models. Passing a current model name
+  # would either fail the lookup or, worse, match a set tuned under different
+  # priors. The binary refuses the mismatched combinations; this keeps the
+  # package from asking for them at all.
+  if (method == "hmc" && is.null(metric)) {
+    stop("method = \"hmc\" needs a `metric`: the binary's compiled-in ",
+         "pre-tuned metrics were tuned for the superseded model variants ",
+         "(plain rw1, Beta priors, no increment prior) and are not valid for ",
+         "the current ones.\nUse method = \"nutsthenhmc\", which adapts from ",
+         "the data, or tune once with write_metric = under \"nuts\" and pass ",
+         "that file back as metric =.")
+  }
   if (!is.null(metric)) {
     if (!file.exists(metric)) stop("metric file not found: ", metric)
     args <- c(args, "--metric", normalizePath(metric))
@@ -241,30 +303,12 @@ badger_hmm_one <- function(test_mat,
     args <- c(args, "--write-metric", write_metric)
   }
 
-  # The compiled-in metrics are sized for the badger cohort (58 or 70
-  # parameters). On data with a different number of years the binary refuses
-  # them, which would make the DEFAULT method fail on perfectly reasonable
-  # input. Fall back to NUTS with a warning rather than erroring: adapting from
-  # scratch is always correct, just slower.
-  fell_back <- FALSE
-  log <- tryCatch(run_test2inf(args), error = function(e) {
-    if (method == "hmc" && is.null(metric) &&
-        grepl("was tuned for", conditionMessage(e), fixed = TRUE)) {
-      warning("The pre-tuned metric for '", model, "' does not fit this data ",
-              "(it is tuned for the badger cohort). Falling back to method = ",
-              "\"nuts\", which adapts from scratch. To use HMC here, tune once ",
-              "with write_metric = and pass it back as metric =.",
-              call. = FALSE)
-      fell_back <<- TRUE
-      nuts_args <- args[!args %in% c("--model", model)]
-      nuts_args[nuts_args == "hmc"] <- "nuts"
-      return(run_test2inf(c(nuts_args, "--accept", target_acc)))
-    }
-    stop(e)
-  })
-  # `fell_back` is assigned with <<- from inside the handler, so it must exist
-  # in this frame first -- otherwise <<- would walk past it to the global env.
-  if (fell_back) method <- "nuts"
+  # No fallback path here any more. The package never passes `--model`, because
+  # the compiled-in pre-tuned metrics belong to the superseded variants, and
+  # `method = "hmc"` without an explicit `metric` is refused above. The default
+  # method adapts to whatever data it is given, so there is nothing left to
+  # fall back FROM.
+  log <- run_test2inf(args)
 
   rd <- function(f) {
     p <- file.path(outdir, f)
@@ -280,9 +324,10 @@ badger_hmm_one <- function(test_mat,
     draws            = rd("draws.csv"),
     prevalence_draws = rd("prevalence_draws.csv"),
     trajectories     = rd("trajectories.csv"),
-    sesp             = extract_sesp(params, spec$infer_sesp),
+    sesp             = extract_sesp(params, spec$infer_sesp, spec$sp_pin),
     settings = list(model = model, label = badger_label(model), method = method,
-                    tests = spec$tests, infer_sesp = spec$infer_sesp,
+                    infer_sesp = spec$infer_sesp, sp_pin = spec$sp_pin,
+                    accuracy_prior = accuracy_prior, year_weight = year_weight,
                     draws = draws, warmup = warmup, traj_draws = traj_draws,
                     metric = metric, write_metric = write_metric,
                     seed = seed, seasons = seasons,

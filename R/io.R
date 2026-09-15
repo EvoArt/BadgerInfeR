@@ -49,24 +49,44 @@ add_year_calendar <- function(df, start_year) {
 # model they are simply the Table 1 constants echoed back. Inferring
 # "estimated" from their presence labels every fixed fit as estimated, which
 # is exactly the bug this comment exists to prevent recurring.
-extract_sesp <- function(params, infer_sesp) {
+extract_sesp <- function(params, infer_sesp, sp_pin = NULL) {
   if (is.null(params)) return(NULL)
   valcol <- if ("estimate" %in% names(params)) "estimate" else "mean"
-  pick <- function(pat) {
-    i <- grep(pat, params$parameter)
-    if (length(i) == 0L) return(numeric(0))
-    params[[valcol]][i]
+  n <- length(BADGER_TESTS)
+
+  # Index by the assay number in the NAME rather than by row order. A pinned
+  # specificity has no row at all, so a positional read would shift every assay
+  # after it onto its neighbour's value -- silently, since the result still
+  # looks like a plausible table.
+  pick <- function(prefix) {
+    out <- rep(NA_real_, n)
+    i <- grep(paste0("^", prefix, "\\["), params$parameter)
+    if (length(i) == 0L) return(out)
+    k <- as.integer(sub(paste0("^", prefix, "\\[(\\d+)\\]$"), "\\1",
+                        params$parameter[i]))
+    ok <- !is.na(k) & k >= 1L & k <= n
+    out[k[ok]] <- params[[valcol]][i][ok]
+    out
   }
-  se <- pick("^Se\\[")
-  sp <- pick("^Sp\\[")
-  if (length(se) == 0L || length(sp) == 0L) {
-    se <- BADGER_SE
-    sp <- BADGER_SP
+  se <- pick("Se")
+  sp <- pick("Sp")
+
+  # Whatever the fit did not estimate is a constant: the Table 1 value, unless
+  # a pin overrode it.
+  se[is.na(se)] <- BADGER_SE[is.na(se)]
+  if (!is.null(sp_pin)) {
+    sp[as.integer(sp_pin[1])] <- sp_pin[2]
   }
-  estimated <- isTRUE(infer_sesp)
+  sp[is.na(sp)] <- BADGER_SP[is.na(sp)]
+
+  # Per-assay, not per-fit: with a pin, culture is fixed while the rest are
+  # estimated, and reporting one flag for all six would misdescribe both.
+  estimated <- rep(isTRUE(infer_sesp), n)
+  if (!is.null(sp_pin)) estimated[as.integer(sp_pin[1])] <- FALSE
+
   data.frame(
-    test      = paste0("test_", seq_along(se)),
-    test_name = BADGER_TESTS[seq_along(se)],
+    test      = paste0("test_", seq_len(n)),
+    test_name = BADGER_TESTS,
     Se        = se,
     Sp        = sp,
     Youden    = se + sp - 1,

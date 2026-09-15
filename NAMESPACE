@@ -1,3 +1,4 @@
+export(BADGER_CULTURE)
 export(BADGER_SE)
 export(BADGER_SP)
 export(BADGER_TESTS)

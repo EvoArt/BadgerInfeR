@@ -8,10 +8,10 @@ Description: In-house interface to the badger diagnostic Hidden Markov Model,
     wrapping the trimmed standalone 'test2inf' executable instead of a Julia
     session. Latent infection status is inferred on a regular time grid from
     imperfect test results, with sensitivity and specificity either fixed at
-    Table 1 values or estimated. Deliberately restricted to the five model
-    variants used in the badger project's sql-e2e bundles: all tests, no DPP
-    and culture-only panels, each with fixed or inferred Se/Sp. Requires no
-    Julia and no R-side compilation on the target machine.
+    published values or estimated, and culture specificity optionally pinned
+    to one. Deliberately restricted to the four model variants used in the
+    project's current comparison. Requires no Julia and no R-side compilation
+    on the target machine.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

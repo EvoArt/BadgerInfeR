@@ -1,9 +1,18 @@
-# The five model variants, named once so scripts cannot drift apart.
+# The four model variants, named once so scripts cannot drift apart.
 #
-# These are exactly the fits in `sql e2e/scripts/02_fit_and_plot.R` and
-# `sql e2e nuts/scripts/02_fit.R`. Restricting the package to them is deliberate:
-# the pre-tuned HMC parameters compiled into the binary are specific to these
-# variants, and culture-only + inferred Se/Sp is not identifiable at all.
+# These are the fits in `identify differences/the case`: fixed or inferred
+# test accuracy, each with culture specificity either free or pinned to one.
+# All four share the same quarterly grid, stacked within-quarter captures and
+# `rw1c` + data-adaptive year model; those were held constant deliberately, so
+# that what differs between the four is the accuracy assumption and nothing
+# else.
+#
+# The earlier five-variant set (all_fixed, all_inferred, culture_only_fixed,
+# no_dpp_fixed, no_dpp_inferred) is superseded and has been removed. Those
+# fits used plain `rw1`, which leaves the level of the year series
+# unidentified, and Beta accuracy priors, whose shape floor distorts the
+# requested moments. Anything still reading those names wants the archived
+# outputs, not a fresh fit.
 
 #' Test names, in the column order the model expects
 #' @export
@@ -11,6 +20,9 @@ BADGER_TESTS <- c("ELISA_BELT", "ELISA_INDIRECT", "Culture", "DPP",
                   "IGRA", "StatPak")
 
 #' Table 1 sensitivity values, in `BADGER_TESTS` order
+#'
+#' Used directly when accuracy is fixed, and as the prior MEDIAN when it is
+#' inferred.
 #' @export
 BADGER_SE <- c(0.407, 0.407, 0.100, 0.650, 0.809, 0.492)
 
@@ -18,29 +30,46 @@ BADGER_SE <- c(0.407, 0.407, 0.100, 0.650, 0.809, 0.492)
 #' @export
 BADGER_SP <- c(0.943, 0.943, 0.999, 0.943, 0.936, 0.931)
 
-# name -> (test indices, infer_sesp). NULL tests means all six.
+#' Index of the culture assay within [BADGER_TESTS]
+#'
+#' Named rather than written as a bare `3`, because pinning the wrong assay's
+#' specificity would be a silent error: the fit would succeed and mean
+#' something different.
+#' @export
+BADGER_CULTURE <- 3L
+
+# name -> (infer_sesp, sp_pin). sp_pin is NA for "leave it to the model".
 .BADGER_MODELS <- list(
-  all_fixed          = list(tests = NULL,             infer_sesp = FALSE),
-  all_inferred       = list(tests = NULL,             infer_sesp = TRUE),
-  culture_only_fixed = list(tests = 3L,               infer_sesp = FALSE),
-  no_dpp_fixed       = list(tests = c(1L,2L,3L,5L,6L), infer_sesp = FALSE),
-  no_dpp_inferred    = list(tests = c(1L,2L,3L,5L,6L), infer_sesp = TRUE)
+  fixed          = list(infer_sesp = FALSE, sp_pin = NULL),
+  fixed_cult1    = list(infer_sesp = FALSE, sp_pin = c(BADGER_CULTURE, 1)),
+  inferred       = list(infer_sesp = TRUE,  sp_pin = NULL),
+  inferred_cult1 = list(infer_sesp = TRUE,  sp_pin = c(BADGER_CULTURE, 1))
 )
 
-# The display names used in the sql-e2e CSV outputs, so a bundle written with
-# this package is column-compatible with one written by test2infeR.
 .BADGER_LABELS <- c(
-  all_fixed          = "All tests (fixed)",
-  all_inferred       = "All tests (inferred)",
-  culture_only_fixed = "Culture only (fixed)",
-  no_dpp_fixed       = "No DPP (fixed)",
-  no_dpp_inferred    = "No DPP (inferred)"
+  fixed          = "Fixed accuracy",
+  fixed_cult1    = "Fixed accuracy, culture Sp = 1",
+  inferred       = "Inferred accuracy",
+  inferred_cult1 = "Inferred accuracy, culture Sp = 1"
 )
 
 #' The supported model variants
 #'
-#' @param labels If `TRUE`, return the display names used in bundle outputs
-#'   ("All tests (fixed)" and so on) rather than the internal keys.
+#' Four fits differing only in how test accuracy is treated:
+#'
+#' \describe{
+#'   \item{`fixed`}{Sensitivity and specificity held at the Table 1 values.
+#'     The main comparator, and the default.}
+#'   \item{`fixed_cult1`}{As `fixed`, but culture specificity is one. This is
+#'     the carry-forward assumption -- that a culture positive is never a false
+#'     positive -- stated inside the model rather than imposed on the data.}
+#'   \item{`inferred`}{Accuracy estimated, with logit-normal priors centred on
+#'     the Table 1 values as medians.}
+#'   \item{`inferred_cult1`}{As `inferred`, but culture specificity pinned to
+#'     one, so it is no longer a parameter at all.}
+#' }
+#'
+#' @param labels If `TRUE`, return the display names rather than the keys.
 #' @return A character vector of model names.
 #' @export
 badger_models <- function(labels = FALSE) {
@@ -50,7 +79,7 @@ badger_models <- function(labels = FALSE) {
 
 #' Display label for a model key
 #' @param model A model key from [badger_models()].
-#' @return The display name used in bundle CSV columns.
+#' @return The display name for that variant.
 #' @export
 badger_label <- function(model) {
   model <- match.arg(model, names(.BADGER_MODELS))
@@ -63,10 +92,17 @@ resolve_model <- function(model) {
          paste(names(.BADGER_MODELS), collapse = ", "))
   }
   if (!model %in% names(.BADGER_MODELS)) {
+    old <- c("all_fixed", "all_inferred", "culture_only_fixed",
+             "no_dpp_fixed", "no_dpp_inferred")
+    hint <- if (model %in% old) {
+      paste0("\n'", model, "' was one of the earlier five variants. Those are ",
+             "superseded: they used plain 'rw1', which leaves the year ",
+             "series' level unidentified, and Beta accuracy priors whose ",
+             "shape floor distorts the requested moments. Use 'fixed' for the ",
+             "closest current equivalent.")
+    } else ""
     stop("Unknown model '", model, "'. Supported models are: ",
-         paste(names(.BADGER_MODELS), collapse = ", "),
-         ".\nThis package is deliberately restricted to the five variants used ",
-         "in the sql-e2e bundles.")
+         paste(names(.BADGER_MODELS), collapse = ", "), ".", hint)
   }
   .BADGER_MODELS[[model]]
 }

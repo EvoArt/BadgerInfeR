@@ -13,14 +13,31 @@ test_data <- function() {
   as.matrix(utils::read.csv(p))
 }
 
-test_that("the model list is exactly the five sql-e2e variants", {
+test_that("the model list is exactly the four current variants", {
   expect_setequal(badger_models(),
-                  c("all_fixed", "all_inferred", "culture_only_fixed",
-                    "no_dpp_fixed", "no_dpp_inferred"))
-  # culture-only + inferred is unidentifiable and must not be offered at all.
-  expect_false("culture_only_inferred" %in% badger_models())
-  expect_equal(badger_label("no_dpp_inferred"), "No DPP (inferred)")
+                  c("fixed", "fixed_cult1", "inferred", "inferred_cult1"))
+  expect_equal(badger_label("fixed_cult1"), "Fixed accuracy, culture Sp = 1")
   expect_error(badger_hmm(matrix(0, 1, 9), model = "nonsense"), "Unknown model")
+  # The superseded names must fail with an explanation, not a bare "unknown":
+  # a script still asking for one wants archived output, not a fresh fit under
+  # a different model that happens to share the name.
+  expect_error(badger_hmm(matrix(0, 1, 9), model = "fixed"), "superseded")
+})
+
+test_that("the defaults are the current model and sampler", {
+  fml <- formals(badger_hmm)
+  expect_equal(fml$model, "fixed")
+  expect_equal(eval(fml$method)[1], "nutsthenhmc")
+  expect_equal(eval(fml$year_process)[1], "rw1c")
+  expect_true(fml$year_weight)
+  expect_equal(eval(fml$accuracy_prior)[1], "logitnormal")
+})
+
+test_that("hmc refuses to run on a stale compiled-in metric", {
+  # The pre-tuned metrics belong to the superseded variants. Sampling with one
+  # would not fail, it would sample badly and quietly, so the package declines
+  # to ask for it.
+  expect_error(badger_hmm(matrix(0, 1, 9), "fixed", "hmc"), "needs a `metric`")
 })
 
 test_that("the test matrix is validated before the binary is invoked", {
@@ -43,7 +60,7 @@ test_that("NA test results survive the round trip as empty fields", {
 
 test_that("MAP runs and returns the documented fields", {
   have_binary(); m <- test_data()
-  fit <- badger_hmm(m, "all_fixed", "map", start_year = 1976)
+  fit <- badger_hmm(m, "fixed", "map", start_year = 1976)
   expect_s3_class(fit, "badger_fit")
   expect_true(all(c("parameters", "prevalence", "p_infected",
                     "year_effects", "sesp", "settings") %in% names(fit)))
@@ -56,8 +73,8 @@ test_that("MAP runs and returns the documented fields", {
 
 test_that("Se/Sp are flagged estimated only when the model infers them", {
   have_binary(); m <- test_data()
-  fixed <- badger_hmm(m, "all_fixed", "map")
-  inferred <- badger_hmm(m, "all_inferred", "map")
+  fixed <- badger_hmm(m, "fixed", "map")
+  inferred <- badger_hmm(m, "inferred", "map")
   expect_false(any(fixed$sesp$estimated))
   expect_true(all(inferred$sesp$estimated))
   # A fixed fit must report exactly the Table 1 constants.
@@ -67,9 +84,31 @@ test_that("Se/Sp are flagged estimated only when the model infers them", {
   expect_false(isTRUE(all.equal(inferred$sesp$Se, BADGER_SE, tolerance = 1e-6)))
 })
 
+test_that("a pinned culture specificity is reported as a fixed 1", {
+  have_binary(); m <- test_data()
+  k <- BADGER_CULTURE
+
+  # Inferred: culture stops being a parameter, so it has no row in the output
+  # and must be filled from the pin rather than read positionally -- reading by
+  # position would slide every later assay onto its neighbour's value.
+  pin <- badger_hmm(m, "inferred_cult1", "map")
+  expect_equal(nrow(pin$sesp), length(BADGER_TESTS))
+  expect_equal(pin$sesp$Sp[k], 1)
+  expect_false(pin$sesp$estimated[k])
+  expect_true(all(pin$sesp$estimated[-k]))
+  expect_false(any(is.na(pin$sesp$Sp)))
+
+  # Fixed: the pin OVERRIDES the Table 1 value rather than removing a
+  # parameter, so it is still a different model from plain "fixed".
+  fx <- badger_hmm(m, "fixed_cult1", "map")
+  expect_equal(fx$sesp$Sp[k], 1)
+  expect_equal(fx$sesp$Sp[-k], BADGER_SP[-k], tolerance = 1e-8)
+  expect_false(any(fx$sesp$estimated))
+})
+
 test_that("NUTS produces draws, and traj_draws produces trajectory outputs", {
   have_binary(); m <- test_data()
-  fit <- badger_hmm(m, "all_fixed", "nuts", draws = 100, warmup = 100,
+  fit <- badger_hmm(m, "fixed", "nuts", draws = 100, warmup = 100,
                     traj_draws = 5, seed = 2)
   expect_equal(nrow(fit$draws), 100)
   expect_equal(ncol(fit$prevalence_draws), 6)          # time + 5 draws
@@ -77,15 +116,15 @@ test_that("NUTS produces draws, and traj_draws produces trajectory outputs", {
   # infection_time is 0 (never) or a real timestep.
   expect_true(all(fit$trajectories$infection_time >= 0))
   # Without traj_draws those outputs are absent, not empty.
-  bare <- badger_hmm(m, "all_fixed", "nuts", draws = 50, warmup = 50, seed = 2)
+  bare <- badger_hmm(m, "fixed", "nuts", draws = 50, warmup = 50, seed = 2)
   expect_null(bare$prevalence_draws)
   expect_null(bare$trajectories)
 })
 
 test_that("the year process is a model choice and changes the answer", {
   have_binary(); m <- test_data()
-  a <- badger_hmm(m, "all_fixed", "map", year_process = "rw1")
-  b <- badger_hmm(m, "all_fixed", "map", year_process = "iid")
+  a <- badger_hmm(m, "fixed", "map", year_process = "rw1")
+  b <- badger_hmm(m, "fixed", "map", year_process = "iid")
   expect_equal(a$settings$year_process, "rw1")
   # Same parameter count, different fit: rw1 and iid are different models.
   expect_equal(nrow(a$parameters), nrow(b$parameters))
@@ -95,11 +134,12 @@ test_that("the year process is a model choice and changes the answer", {
 
 test_that("a metric can be exported and reused, without a rebuild", {
   have_binary(); m <- test_data()
-  # The compiled-in metrics are tuned for the badger cohort. For any other
-  # data the workflow is: adapt once with nuts, export, then reuse under hmc.
-  # This is the whole reason the metric is not locked inside the binary.
+  # `hmc` now always needs a metric, because the compiled-in ones belong to the
+  # superseded variants. The workflow is: adapt once with nuts, export, then
+  # reuse under hmc. This is the whole reason the metric is not locked inside
+  # the binary.
   mf <- tempfile(fileext = ".csv")
-  a <- badger_hmm(m, "all_fixed", "nuts", draws = 100, warmup = 100,
+  a <- badger_hmm(m, "fixed", "nuts", draws = 100, warmup = 100,
                   write_metric = mf, seed = 4)
   expect_true(file.exists(mf))
   metric <- as.matrix(utils::read.csv(mf, header = FALSE))
@@ -110,32 +150,43 @@ test_that("a metric can be exported and reused, without a rebuild", {
   expect_true(all(diag(metric) > 0))
 
   # With a metric that DOES fit, hmc runs and no fallback happens.
-  b <- badger_hmm(m, "all_fixed", "hmc", draws = 100, warmup = 100,
+  b <- badger_hmm(m, "fixed", "hmc", draws = 100, warmup = 100,
                   metric = mf, seed = 4)
   expect_equal(nrow(b$draws), 100)
   expect_equal(b$settings$metric, mf)
   expect_equal(b$settings$method, "hmc")
 
-  expect_error(badger_hmm(m, "all_fixed", "hmc", metric = "no_such_file.csv"),
+  expect_error(badger_hmm(m, "fixed", "hmc", metric = "no_such_file.csv"),
                "metric file not found")
 })
 
-test_that("hmc is the default, and falls back when its metric does not fit", {
-  # Pre-tuned HMC is ~14x faster in wall time than adapting from scratch on the
-  # badger cohort, which is why it is the default. But the compiled metrics are
-  # sized for that cohort (58/70 parameters), so on other data the default must
-  # DEGRADE to nuts rather than error -- a default that fails on reasonable
-  # input is not a default.
+test_that("the default method samples without any pre-tuned constants", {
+  # nutsthenhmc adapts the step size and metric during warmup and then draws
+  # with them, so it works on any data with nothing compiled in. There is no
+  # fallback path any more, and no warning: the default simply runs.
   have_binary(); m <- test_data()
-  expect_warning(f <- badger_hmm(m, "all_fixed", draws = 50, warmup = 50),
-                 "does not fit this data")
-  expect_equal(f$settings$method, "nuts")   # reports what it actually ran
+  f <- expect_no_warning(badger_hmm(m, "fixed", draws = 50, warmup = 50))
+  expect_equal(f$settings$method, "nutsthenhmc")
   expect_equal(nrow(f$draws), 50)
+})
+
+test_that("nutsthenhmc and nuts agree on the posterior", {
+  # Two samplers on one target must give one answer. A bad hand-off from the
+  # adapting phase to the fixed-length phase would still produce draws -- of
+  # the wrong distribution.
+  have_binary(); m <- test_data()
+  a <- badger_hmm(m, "fixed", "nuts", draws = 600, warmup = 400, seed = 11)
+  b <- badger_hmm(m, "fixed", "nutsthenhmc", draws = 600, warmup = 400, seed = 11)
+  for (j in seq_len(ncol(a$draws))) {
+    ma <- mean(a$draws[[j]]); mb <- mean(b$draws[[j]])
+    sa <- stats::sd(a$draws[[j]])
+    expect_lt(abs(ma - mb), 0.4 * max(sa, 1e-6))
+  }
 })
 
 test_that("a fit is reproducible from its seed", {
   have_binary(); m <- test_data()
-  f1 <- badger_hmm(m, "all_fixed", "nuts", draws = 50, warmup = 50, seed = 7)
-  f2 <- badger_hmm(m, "all_fixed", "nuts", draws = 50, warmup = 50, seed = 7)
+  f1 <- badger_hmm(m, "fixed", "nuts", draws = 50, warmup = 50, seed = 7)
+  f2 <- badger_hmm(m, "fixed", "nuts", draws = 50, warmup = 50, seed = 7)
   expect_equal(f1$draws, f2$draws)
 })

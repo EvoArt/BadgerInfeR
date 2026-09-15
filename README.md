@@ -20,13 +20,16 @@ whose CI runner is being retired — build from
 
 ```r
 badger_hmm(test_mat,
-           model = "all_fixed",
-           method = c("hmc", "nuts", "map"),
+           model = "fixed",
+           method = c("nutsthenhmc", "nuts", "map", "hmc"),
            draws = 1000L, warmup = 1000L, traj_draws = 0L,
            metric = NULL, write_metric = NULL,
-           target_acc = 0.8, seed = 1L, seasons = 4L,
+           target_acc = 0.8, seed = 1L, chains = 1L, cores = NULL,
+           seasons = 4L,
            repeat_captures = c("stack", "pool", "last"),
-           year_process = c("rw1", "iid", "rw2", "none", "shrunk"),
+           year_process = c("rw1c", "rw1", "iid", "rw2", "none", "shrunk"),
+           year_weight = TRUE,
+           accuracy_prior = c("logitnormal", "beta"),
            penalty = TRUE, start_year = 0L,
            workdir = tempfile("badgerinfer"), keep_workdir = FALSE)
 ```
@@ -35,16 +38,19 @@ badger_hmm(test_mat,
 |---|---|
 | `test_mat` | matrix/data frame: `time, id, captured, test1..test6`. `NA` = not tested. Rows with `captured == 0` optional. |
 | `model` | one of `badger_models()` |
-| `method` | `hmc` uses a pre-tuned dense metric; `nuts` adapts from scratch; `map` is the posterior mode |
+| `method` | `nutsthenhmc` adapts with NUTS then draws with fixed-L HMC; `nuts` is pure NUTS; `map` is the posterior mode; `hmc` is fixed-L HMC and requires `metric` |
 | `draws`, `warmup` | sampling iterations |
 | `traj_draws` | draws used for per-draw prevalence and infection times; `0` skips |
-| `metric` | path to an inverse mass matrix CSV, overrides the compiled-in one |
+| `metric` | path to an inverse mass matrix CSV |
 | `write_metric` | path to write the metric used |
-| `target_acc` | NUTS target acceptance |
-| `seed` | RNG seed |
+| `target_acc` | target acceptance during adaptation |
+| `seed` | RNG seed; chain `k` uses `seed + k - 1` |
+| `chains`, `cores` | chains to run, and how many at once |
 | `seasons` | timesteps per year |
 | `repeat_captures` | how to treat multiple captures in one timestep |
-| `year_process` | `rw1`, `iid`, `rw2`, `none`, `shrunk` — different models, not tuning options. `ar1` is unavailable (it adds a parameter). |
+| `year_process` | `rw1c`, `rw1`, `iid`, `rw2`, `none`, `shrunk` — different models, not tuning options. `ar1` is unavailable (it adds a parameter). |
+| `year_weight` | data-adaptive year-increment prior |
+| `accuracy_prior` | `logitnormal` or `beta`; only used when Se/Sp are inferred |
 | `penalty` | Se+Sp>1 identifiability penalty |
 | `start_year` | calendar year of `time == 1`; `0` omits calendar columns |
 | `workdir`, `keep_workdir` | scratch directory for the binary's I/O |
@@ -64,19 +70,25 @@ Returns an object of class `badger_fit`, a list of:
 | `settings` | the arguments used |
 | `log` | binary stdout, including divergences and step size |
 
-`method = "hmc"` falls back to `nuts` with a warning when the compiled metric
-does not match the supplied data. To use HMC on other data:
+`method = "hmc"` requires an explicit `metric`: the metrics compiled into the
+binary were tuned for the superseded variants (plain `rw1`, Beta priors, no
+increment prior), so they do not describe the current posterior. Tune once and
+reuse:
 
 ```r
-a <- badger_hmm(m, "all_fixed", "nuts", write_metric = "metric.csv")
-b <- badger_hmm(m, "all_fixed", "hmc",  metric = "metric.csv")
+a <- badger_hmm(m, "fixed", "nutsthenhmc", write_metric = "metric.csv")
+b <- badger_hmm(m, "fixed", "hmc",         metric = "metric.csv")
 ```
+
+The default `nutsthenhmc` needs none of this — it adapts to whatever data it
+is given. On the badger cohort, 1000 draws after 1000 warmup iterations takes
+about 2m20s per chain.
 
 ## Other functions
 
 | | |
 |---|---|
-| `badger_models(labels = FALSE)` | the five model names; `labels = TRUE` gives display names |
+| `badger_models(labels = FALSE)` | the four model names; `labels = TRUE` gives display names |
 | `badger_label(model)` | display name for a model key |
 | `badger_binary()` | path to the executable |
 | `check_badger_binary()` | error if it does not run |
@@ -86,19 +98,50 @@ b <- badger_hmm(m, "all_fixed", "hmc",  metric = "metric.csv")
 | `install_test2inf(tag = "latest", force = FALSE, quiet = FALSE)` | download and install the binary |
 
 `BADGER_TESTS`, `BADGER_SE`, `BADGER_SP`: test names and Table 1 values, in
-column order.
+column order. `BADGER_CULTURE` is culture's index within them.
 
 ## Models
 
-| key | tests | Se/Sp |
-|---|---|---|
-| `all_fixed` | all six | fixed |
-| `all_inferred` | all six | inferred |
-| `culture_only_fixed` | Culture | fixed |
-| `no_dpp_fixed` | not DPP | fixed |
-| `no_dpp_inferred` | not DPP | inferred |
+Four fits, differing only in how test accuracy is treated. Everything else —
+the quarterly grid, stacked within-quarter captures, `rw1c` + the increment
+prior — is held constant, so what separates them is the accuracy assumption
+and nothing else.
 
-Culture-only with inferred Se/Sp is not offered: it is not identifiable.
+| key | Se/Sp | culture Sp |
+|---|---|---|
+| `fixed` | Table 1 values | 0.999 (Table 1) |
+| `fixed_cult1` | Table 1 values | pinned to 1 |
+| `inferred` | estimated | estimated |
+| `inferred_cult1` | estimated | pinned to 1 |
+
+Pinning culture specificity to one states that a culture positive is never a
+false positive — the carry-forward assumption, written into the model rather
+than imposed on the data. With `inferred` it removes a parameter; with `fixed`
+it overrides the tabulated 0.999.
+
+The earlier five variants (`all_fixed`, `all_inferred`, `culture_only_fixed`,
+`no_dpp_fixed`, `no_dpp_inferred`) are **superseded and removed**. They used
+plain `rw1`, which leaves the level of the year series unidentified, and Beta
+accuracy priors, whose shape floor at 0.5 distorts the requested moments
+(culture Sp: asked for a mean of 0.999, got `Beta(3.26, 0.5)`, mean 0.867).
+Asking for one by name is an error, not a silent substitution.
+
+## The year model
+
+`rw1c` plus the data-adaptive increment prior, both on by default.
+
+Plain `rw1` leaves the **level** of the year series unidentified, so years
+with no test data drift and the walk extrapolates backwards from the first
+year that has any. `rw1c` centres the series so the level is carried by the
+seasonal intercepts instead; the increment prior then shrinks each
+year-to-year step in proportion to how little data informs it, pinning an
+untested year to its neighbour while leaving well-tested years to the
+likelihood.
+
+These fix an identifiability problem; they do not push early hazards toward
+zero, and they should not. 1976–77 were tested by culture alone, whose
+sensitivity is 0.10, so a run of negatives from those years is weak evidence
+and some residual hazard is honest.
 
 ## Environment variables
 
