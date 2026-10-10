@@ -39,6 +39,12 @@ badger_hmm <- function(test_mat,
                        draws = 1000L,
                        warmup = 1000L,
                        traj_draws = 0L,
+                       traj_mode = c("threshold", "sample"),
+                       states = 2L,
+                       e_mult = NULL,
+                       birth = NULL,
+                       init_starts = 1L,
+                       init_jitter = 0,
                        metric = NULL,
                        write_metric = NULL,
                        step_size = NULL,
@@ -61,6 +67,7 @@ badger_hmm <- function(test_mat,
   repeat_captures <- match.arg(repeat_captures)
   year_process <- match.arg(year_process)
   accuracy_prior <- match.arg(accuracy_prior)
+  traj_mode <- match.arg(traj_mode)
   chains <- as.integer(chains)
   if (is.na(chains) || chains < 1L) stop("`chains` must be a positive integer.")
 
@@ -75,6 +82,9 @@ badger_hmm <- function(test_mat,
 
   args <- list(test_mat = test_mat, model = model, method = method,
                draws = draws, warmup = warmup, traj_draws = traj_draws,
+               traj_mode = traj_mode, states = states, e_mult = e_mult,
+               birth = birth, init_starts = init_starts,
+               init_jitter = init_jitter,
                metric = metric, write_metric = write_metric,
                step_size = step_size, n_leapfrog = n_leapfrog,
                target_acc = target_acc, seasons = seasons,
@@ -161,6 +171,35 @@ badger_hmm <- function(test_mat,
 #' @param draws,warmup Posterior draws and warmup iterations (sampling methods).
 #' @param traj_draws Number of evenly spaced draws to reconstruct per-draw
 #'   prevalence and infection times from. 0 skips that work.
+#' @param traj_mode How the infection time in `trajectories` is found for each
+#'   kept draw. `"threshold"` (default): first timestep where smoothed
+#'   P(infected) reaches 0.5. `"sample"`: sample a state path given that draw's
+#'   parameters, so a badger with a 20% chance of infection is infected in
+#'   about 20% of draws.
+#' @param states `2` (default) for uninfected -> infected, or `3` for
+#'   uninfected -> exposed -> infectious. The three-state model adds `tau`
+#'   (per-timestep exposed -> infectious hazard), `rho` (share of badgers
+#'   infected at first capture that are already infectious) and a multiplier
+#'   per assay with P(+ | exposed) = `e_mult[k]` * `Se[k]`. `p_infected` is then
+#'   P(exposed or infectious), with `p_exposed` and `p_infectious` alongside,
+#'   and `trajectories` has `infectious_time`.
+#' @param e_mult Multipliers to fix, for `states = 3`: length six in
+#'   [BADGER_TESTS] order, values in `[0, 1]`, `NA` to estimate. `NULL`
+#'   (default) estimates all six with a Uniform(0, 1) prior.
+#' @param birth Birth timesteps as a numeric vector named by badger `id`, on
+#'   the same grid as `test_mat`. These badgers start susceptible at birth;
+#'   badgers that are missing or `NA` keep the estimated probability of being
+#'   infected at first capture. `NULL` (default) uses that for everyone.
+#'   Births before timestep 1 or after the first capture are ignored. Rows in
+#'   `p_infected` then start at birth.
+#' @param init_starts Number of starting points for the optimiser that
+#'   initialises each chain; chains start from the best optimum found. The
+#'   starts are the same for every chain. All optima are printed in `log`.
+#'   Useful when chains can get stuck in a minor mode (the three-state model on
+#'   the Woodchester data has one).
+#' @param init_jitter Sd of noise added to each chain's starting point
+#'   (unconstrained scale, seeded by the chain's seed). Chains then start
+#'   apart, so separated modes show up as a large `rhat`.
 #' @param target_acc NUTS target acceptance probability.
 #' @param seed RNG seed.
 #' @param seasons Timesteps per year.
@@ -186,7 +225,7 @@ badger_hmm <- function(test_mat,
 #'
 #' @return A list with elements `parameters`, `prevalence`, `p_infected`,
 #'   `year_effects`, `draws`, `prevalence_draws`, `trajectories`, `sesp`,
-#'   `settings` and `log`. Sampling-only outputs are `NULL` under `method = "map"`.
+#'   `settings` and `log` (and `prevalence_infectious_draws` if `states = 3`). Sampling-only outputs are `NULL` under `method = "map"`.
 #' @keywords internal
 badger_hmm_one <- function(test_mat,
                        model = "fixed",
@@ -194,6 +233,12 @@ badger_hmm_one <- function(test_mat,
                        draws = 1000L,
                        warmup = 1000L,
                        traj_draws = 0L,
+                       traj_mode = c("threshold", "sample"),
+                       states = 2L,
+                       e_mult = NULL,
+                       birth = NULL,
+                       init_starts = 1L,
+                       init_jitter = 0,
                        metric = NULL,
                        write_metric = NULL,
                        step_size = NULL,
@@ -214,6 +259,34 @@ badger_hmm_one <- function(test_mat,
   repeat_captures <- match.arg(repeat_captures)
   year_process <- match.arg(year_process)
   accuracy_prior <- match.arg(accuracy_prior)
+  traj_mode <- match.arg(traj_mode)
+  states <- as.integer(states)
+  if (length(states) != 1L || is.na(states) || !states %in% 2:3) {
+    stop("`states` must be 2 or 3.")
+  }
+  if (!is.null(e_mult)) {
+    if (!is.numeric(e_mult) || length(e_mult) != length(BADGER_TESTS) ||
+        any(!is.na(e_mult) & (e_mult < 0 | e_mult > 1))) {
+      stop("`e_mult` must be NULL or ", length(BADGER_TESTS),
+           " values in [0, 1], with NA for a multiplier to estimate.")
+    }
+  }
+  if (!is.null(birth)) {
+    bid <- suppressWarnings(as.integer(names(birth)))
+    if (!is.numeric(birth) || is.null(names(birth)) || anyNA(bid) ||
+        anyDuplicated(bid)) {
+      stop("`birth` must be a numeric vector of birth timesteps named by ",
+           "badger id, one entry per badger.")
+    }
+    known <- !is.na(birth)
+    if (any(birth[known] != round(birth[known]))) {
+      stop("`birth` must hold whole timesteps on the same grid as `test_mat`.")
+    }
+  }
+  if (!is.numeric(init_jitter) || length(init_jitter) != 1L ||
+      is.na(init_jitter) || init_jitter < 0) {
+    stop("`init_jitter` must be a single non-negative number.")
+  }
   spec <- resolve_model(model)
 
   dir.create(workdir, recursive = TRUE, showWarnings = FALSE)
@@ -243,9 +316,32 @@ badger_hmm_one <- function(test_mat,
                       format(spec$sp_pin[2], digits = 15)))
   }
   if (!isTRUE(penalty))        args <- c(args, "--no-penalty")
+  if (states == 3L) {
+    args <- c(args, "--states", 3L)
+    for (k in which(!is.na(e_mult))) {
+      args <- c(args, "--e-mult",
+                sprintf("%d=%s", k, format(e_mult[k], digits = 15)))
+    }
+  }
+  if (init_jitter > 0) args <- c(args, "--init-jitter", init_jitter)
+  init_starts <- as.integer(init_starts)
+  if (length(init_starts) != 1L || is.na(init_starts) || init_starts < 1L) {
+    stop("`init_starts` must be a positive integer.")
+  }
+  if (init_starts > 1L) args <- c(args, "--init-starts", init_starts)
+  if (!is.null(birth) && any(!is.na(birth))) {
+    bcsv <- file.path(workdir, "birth.csv")
+    keep <- !is.na(birth)
+    utils::write.csv(data.frame(id = as.integer(names(birth))[keep],
+                                birth = as.integer(birth[keep])),
+                     bcsv, row.names = FALSE, quote = FALSE)
+    args <- c(args, "--birth", bcsv)
+  }
   if (method %in% c("nuts", "hmc", "nutsthenhmc")) {
     args <- c(args, "--draws", draws, "--warmup", warmup)
-    if (traj_draws > 0L) args <- c(args, "--traj-draws", traj_draws)
+    if (traj_draws > 0L) {
+      args <- c(args, "--traj-draws", traj_draws, "--traj-mode", traj_mode)
+    }
   }
   if (method %in% c("nuts", "nutsthenhmc")) {
     args <- c(args, "--accept", target_acc)
@@ -294,12 +390,17 @@ badger_hmm_one <- function(test_mat,
     year_effects     = add_year_calendar(rd("year_effects.csv"), start_year),
     draws            = rd("draws.csv"),
     prevalence_draws = rd("prevalence_draws.csv"),
+    prevalence_infectious_draws = rd("prevalence_infectious_draws.csv"),
     trajectories     = rd("trajectories.csv"),
     sesp             = extract_sesp(params, spec$infer_sesp, spec$sp_pin),
     settings = list(model = model, label = badger_label(model), method = method,
                     infer_sesp = spec$infer_sesp, sp_pin = spec$sp_pin,
                     accuracy_prior = accuracy_prior, year_weight = year_weight,
                     draws = draws, warmup = warmup, traj_draws = traj_draws,
+                    traj_mode = traj_mode, states = states,
+                    e_mult = if (states == 3L) e_mult else NULL,
+                    init_jitter = init_jitter, init_starts = init_starts,
+                    n_birth = if (is.null(birth)) 0L else sum(!is.na(birth)),
                     metric = metric, write_metric = write_metric,
                     step_size = step_size, n_leapfrog = n_leapfrog,
                     seed = seed, seasons = seasons,
@@ -317,6 +418,9 @@ print.badger_fit <- function(x, ...) {
   s <- x$settings
   cat("<badger_fit>", s$label, "/", s$method, "\n")
   cat("  year process: ", s$year_process, "   seed: ", s$seed, "\n", sep = "")
+  if (identical(s$states, 3L)) {
+    cat("  states:       3 (uninfected, exposed, infectious)\n")
+  }
   if (!is.null(x$parameters)) {
     cat("  parameters:   ", nrow(x$parameters), "\n", sep = "")
   }
@@ -328,7 +432,7 @@ print.badger_fit <- function(x, ...) {
   }
   # The binary reports divergences and step size on stdout; surface them,
   # because a run with post-warmup divergences should not pass unnoticed.
-  diag <- grep("^(step size|warmup|sampling|WARNING)", x$log, value = TRUE)
+  diag <- grep("^(births|init:|step size|warmup|sampling|WARNING)", x$log, value = TRUE)
   for (l in diag) cat("  ", l, "\n", sep = "")
   invisible(x)
 }

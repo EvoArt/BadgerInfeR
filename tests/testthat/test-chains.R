@@ -123,3 +123,32 @@ test_that("running four chains beats running them one after another", {
                seed = 1, chains = 4, cores = 1))[["elapsed"]]
   expect_lt(t_par, t_ser)
 })
+
+test_that("badger_keep_chains rebuilds everything from the kept chains", {
+  have_binary()
+  fit <- badger_hmm(test_data(), "inferred", "nuts", states = 3L,
+                    draws = 40L, warmup = 60L, chains = 3L, cores = 3L,
+                    traj_draws = 8L, seed = 5L, init_jitter = 1)
+  expect_length(fit$by_chain, 3L)
+  # combined probabilities are the mean over chains
+  m3 <- rowMeans(sapply(fit$by_chain, function(b) b$p_infected$p_infected))
+  expect_equal(fit$p_infected$p_infected, m3)
+
+  sub <- badger_keep_chains(fit, c(1, 3))
+  expect_setequal(unique(sub$draws$chain), c(1, 3))
+  expect_setequal(unique(sub$trajectories$chain), c(1, 3))
+  m2 <- rowMeans(sapply(fit$by_chain[c(1, 3)],
+                        function(b) b$p_infected$p_infected))
+  expect_equal(sub$p_infected$p_infected, m2)
+  expect_equal(sub$p_infected$p_exposed + sub$p_infected$p_infectious,
+               sub$p_infected$p_infected, tolerance = 1e-6)
+  expect_equal(sub$settings$chains_kept, c(1L, 3L))
+  expect_equal(sub$settings$chains_dropped, 2L)
+  expect_true(all(c("rhat", "ess_bulk") %in% names(sub$parameters)))
+  expect_equal(nrow(sub$parameters), nrow(fit$parameters))
+  # keeping all chains changes nothing
+  all3 <- badger_keep_chains(fit, 1:3)
+  expect_equal(all3$p_infected, fit$p_infected)
+  expect_equal(all3$diagnostics, fit$diagnostics)
+  expect_error(badger_keep_chains(fit, 4), "between 1 and 3")
+})

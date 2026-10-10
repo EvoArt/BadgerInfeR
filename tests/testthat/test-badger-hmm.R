@@ -196,3 +196,112 @@ test_that("a fit is reproducible from its seed", {
   f2 <- badger_hmm(m, "fixed", "nuts", draws = 50, warmup = 50, seed = 7)
   expect_equal(f1$draws, f2$draws)
 })
+
+test_that("the three-state model is opt-in and validated up front", {
+  fml <- formals(badger_hmm)
+  expect_equal(fml$states, 2L)
+  expect_equal(eval(fml$traj_mode)[1], "threshold")
+  expect_null(fml$e_mult)
+  expect_equal(fml$init_jitter, 0)
+  m <- matrix(1, 2, 9); m[, 1] <- c(1, 2)
+  expect_error(badger_hmm(m, "inferred", "map", states = 4L), "2 or 3")
+  expect_error(badger_hmm(m, "inferred", "map", states = 3L, e_mult = 0.5),
+               "values in")
+  expect_error(badger_hmm(m, "inferred", "map", states = 3L,
+                          e_mult = c(NA, NA, 1.5, NA, NA, NA)), "values in")
+  expect_error(badger_hmm(m, "inferred", "map", init_jitter = -1),
+               "non-negative")
+})
+
+test_that("a three-state fit splits infected into exposed and infectious", {
+  have_binary()
+  fit <- badger_hmm(test_data(), "inferred", "nuts", states = 3L,
+                    draws = 40L, warmup = 60L, traj_draws = 8L,
+                    traj_mode = "sample", seed = 3L)
+  expect_true(all(c("tau", "rho", paste0("e_mult[", 1:6, "]")) %in%
+                    fit$parameters$parameter))
+  expect_true(all(c("p_exposed", "p_infectious") %in% names(fit$p_infected)))
+  expect_equal(fit$p_infected$p_infected,
+               fit$p_infected$p_exposed + fit$p_infected$p_infectious,
+               tolerance = 1e-6)
+  tj <- fit$trajectories
+  expect_true("infectious_time" %in% names(tj))
+  # infectious_time needs an infection_time and can't precede it
+  inf <- tj$infectious_time > 0
+  expect_true(all(tj$infection_time[inf] > 0))
+  expect_true(all(tj$infectious_time[inf] >= tj$infection_time[inf]))
+  expect_false(is.null(fit$prevalence_infectious_draws))
+  expect_equal(fit$settings$states, 3L)
+})
+
+test_that("a fixed multiplier is a constant, not a parameter", {
+  have_binary()
+  fit <- badger_hmm(test_data(), "inferred", "map", states = 3L,
+                    e_mult = c(NA, NA, 0, NA, NA, 1))
+  p <- fit$parameters
+  expect_equal(p$estimate[p$parameter == "e_mult[3]"], 0)
+  expect_equal(p$estimate[p$parameter == "e_mult[6]"], 1)
+  free <- p$estimate[p$parameter %in% paste0("e_mult[", c(1, 2, 4, 5), "]")]
+  expect_true(all(free >= 0 & free <= 1))
+})
+
+test_that("jittered starts differ between seeds and repeat within one", {
+  have_binary()
+  f <- function(seed) badger_hmm(test_data(), "inferred", "nuts", states = 3L,
+                                 draws = 20L, warmup = 20L, seed = seed,
+                                 init_jitter = 1)$draws
+  expect_equal(f(1L), f(1L))
+  expect_false(isTRUE(all.equal(f(1L), f(2L))))
+})
+
+test_that("birth is validated before the binary is invoked", {
+  m <- matrix(1, 2, 9); m[, 1] <- c(1, 2)
+  expect_null(formals(badger_hmm)$birth)
+  expect_error(badger_hmm(m, "inferred", "map", birth = c(3, 4)), "named by")
+  expect_error(badger_hmm(m, "inferred", "map", birth = c(a = 3)), "named by")
+  expect_error(badger_hmm(m, "inferred", "map", birth = c(`1` = 2.5)),
+               "whole timesteps")
+})
+
+test_that("a badger with a known birth starts susceptible there", {
+  have_binary()
+  m <- test_data()
+  first <- tapply(m[, "time"], m[, "id"], min)
+  ok <- first > 4
+  birth <- first[ok] - 4                 # named by id already
+  birth[1] <- NA                         # one explicitly unknown
+  fit0 <- badger_hmm(m, "inferred", "map", states = 3L)
+  fit  <- badger_hmm(m, "inferred", "map", states = 3L, birth = birth)
+  expect_equal(fit$settings$n_birth, sum(!is.na(birth)))
+  expect_true(any(grepl("^births: ", fit$log)))
+  # four extra rows per born badger, p = 0 at birth
+  p <- fit$p_infected
+  expect_equal(nrow(p), nrow(fit0$p_infected) + 4L * sum(!is.na(birth)))
+  born <- names(birth)[!is.na(birth)]
+  at_birth <- p[paste(p$id, p$time) %in% paste(born, birth[born]), ]
+  expect_equal(nrow(at_birth), length(born))
+  expect_true(all(at_birth$p_infected == 0))
+  # other badgers unchanged
+  others <- setdiff(unique(p$id), as.integer(born))
+  expect_equal(sum(p$id %in% others), sum(fit0$p_infected$id %in% others))
+})
+
+test_that("init_starts picks the best of several optimisations", {
+  expect_equal(formals(badger_hmm)$init_starts, 1L)
+  m <- matrix(1, 2, 9); m[, 1] <- c(1, 2)
+  expect_error(badger_hmm(m, "inferred", "map", init_starts = 0L),
+               "positive integer")
+  have_binary()
+  lp <- function(fit) as.numeric(sub("^log posterior: ([-0-9.eE+]+).*$", "\\1",
+                                     grep("^log posterior:", fit$log, value = TRUE)))
+  one  <- badger_hmm(test_data(), "inferred", "map", states = 3L)
+  many <- badger_hmm(test_data(), "inferred", "map", states = 3L,
+                     init_starts = 6L)
+  expect_length(grep("^init start ", many$log), 6L)
+  expect_true(any(grepl("^init: best of 6 starts", many$log)))
+  expect_gte(lp(many), lp(one) - 1e-6)
+  # starts don't depend on the seed
+  again <- badger_hmm(test_data(), "inferred", "map", states = 3L,
+                      init_starts = 6L, seed = 99L)
+  expect_equal(again$parameters, many$parameters)
+})

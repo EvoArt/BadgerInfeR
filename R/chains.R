@@ -39,6 +39,20 @@
   do.call(rbind, parts)
 }
 
+.PREV_COLS <- c("prevalence", "prevalence_infectious")
+.PROB_COLS <- c("p_infected", "p_exposed", "p_infectious")
+
+# Average the named columns across chains; other columns come from chain 1.
+.mean_over_chains <- function(fits, element, cols) {
+  base <- fits[[1]][[element]]
+  if (is.null(base)) return(NULL)
+  for (col in intersect(cols, names(base))) {
+    vals <- vapply(fits, function(f) f[[element]][[col]], numeric(nrow(base)))
+    base[[col]] <- rowMeans(matrix(vals, nrow = nrow(base)))
+  }
+  base
+}
+
 # Split-Rhat and bulk ESS, computed from the pooled draws.
 #
 # Worth having because the reason to run four chains at all is to find out
@@ -126,15 +140,26 @@
 # what changes is that the row-wise elements gain a `chain` column and
 # `$parameters` is recomputed from the pooled draws.
 .combine_chain_fits <- function(fits, settings) {
-  stacked <- c("draws", "prevalence_draws", "trajectories")
+  stacked <- c("draws", "prevalence_draws", "prevalence_infectious_draws",
+               "trajectories")
   out <- list()
 
   # Non-draw outputs are per-chain summaries of the same posterior. Take chain
   # 1's, which is a valid summary, rather than averaging point estimates across
   # chains -- averaging quantiles is not a quantile of anything.
-  for (el in c("prevalence", "p_infected", "year_effects", "sesp")) {
+  for (el in c("year_effects", "sesp")) {
     out[[el]] <- fits[[1]][[el]]
   }
+  # These are posterior means and every chain has the same number of draws,
+  # so average them over chains.
+  out$prevalence <- .mean_over_chains(
+    fits, "prevalence", .PREV_COLS)
+  out$p_infected <- .mean_over_chains(
+    fits, "p_infected", .PROB_COLS)
+  # keep the per-chain values so badger_keep_chains() can re-average
+  out$by_chain <- lapply(fits, function(f) list(
+    prevalence = f$prevalence[intersect(.PREV_COLS, names(f$prevalence))],
+    p_infected = f$p_infected[intersect(.PROB_COLS, names(f$p_infected))]))
   for (el in stacked) out[[el]] <- .stack_chain_frames(fits, el)
 
   out$draws <- .stack_chain_frames(fits, "draws")
@@ -184,3 +209,58 @@
 }
 
 `%||%` <- function(a, b) if (is.null(a)) b else a
+
+#' Keep a subset of a multi-chain fit's chains
+#'
+#' Rebuilds a combined `badger_fit` from some of its chains. Draws, per-draw
+#' prevalence and trajectories are filtered; `p_infected` and `prevalence` are
+#' re-averaged over the kept chains; the parameter table, `rhat` and `ess_bulk`
+#' are recomputed.
+#'
+#' For when chains have ended up in different modes and only one mode matters.
+#' Chain numbers are not renumbered. `settings$chains_kept` records the choice.
+#'
+#' @param fit A `badger_fit` from [badger_hmm()] with `chains > 1`.
+#' @param keep Chain numbers to keep.
+#' @return A `badger_fit`.
+#' @export
+badger_keep_chains <- function(fit, keep) {
+  if (is.null(fit$by_chain)) {
+    stop("`fit` holds no per-chain results; it must come from badger_hmm() ",
+         "with chains > 1.")
+  }
+  all_chains <- seq_along(fit$by_chain)
+  keep <- sort(unique(as.integer(keep)))
+  if (length(keep) == 0L || !all(keep %in% all_chains)) {
+    stop("`keep` must be chain numbers between 1 and ", length(all_chains), ".")
+  }
+  out <- fit
+  for (el in c("draws", "prevalence_draws", "prevalence_infectious_draws",
+               "trajectories")) {
+    if (!is.null(fit[[el]])) {
+      out[[el]] <- fit[[el]][fit[[el]]$chain %in% keep, , drop = FALSE]
+    }
+  }
+  for (el in c("prevalence", "p_infected")) {
+    for (col in names(fit$by_chain[[1]][[el]])) {
+      vals <- vapply(keep, function(k) fit$by_chain[[k]][[el]][[col]],
+                     numeric(nrow(fit[[el]])))
+      out[[el]][[col]] <- rowMeans(matrix(vals, nrow = nrow(fit[[el]])))
+    }
+  }
+  out$diagnostics <- .chain_diagnostics(out$draws)
+  params <- fit$parameters[setdiff(names(fit$parameters),
+                                   c("rhat", "ess_bulk"))]
+  pooled <- .pool_parameters(out$draws, params)
+  if (!is.null(pooled)) params <- pooled
+  if (!is.null(out$diagnostics)) {
+    params <- merge(params, out$diagnostics, by = "parameter", all.x = TRUE,
+                    sort = FALSE)
+  }
+  out$parameters <- params
+  if (is.list(fit$log)) out$log <- fit$log[keep]
+  if (!is.null(fit$chain_times)) out$chain_times <- fit$chain_times[keep]
+  out$settings$chains_kept <- keep
+  out$settings$chains_dropped <- setdiff(all_chains, keep)
+  out
+}

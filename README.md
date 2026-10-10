@@ -23,6 +23,9 @@ badger_hmm(test_mat,
            model = "fixed",
            method = c("nuts", "nutsthenhmc", "map", "hmc"),
            draws = 1000L, warmup = 1000L, traj_draws = 0L,
+           traj_mode = c("threshold", "sample"),
+           states = 2L, e_mult = NULL, birth = NULL,
+           init_starts = 1L, init_jitter = 0,
            metric = NULL, write_metric = NULL,
            target_acc = 0.8, seed = 1L, chains = 1L, cores = NULL,
            seasons = 4L,
@@ -41,6 +44,12 @@ badger_hmm(test_mat,
 | `method` | see Samplers below |
 | `draws`, `warmup` | sampling iterations |
 | `traj_draws` | draws used for per-draw prevalence and infection times; `0` skips |
+| `traj_mode` | `threshold` or `sample`: how each draw dates infection (see Three states) |
+| `states` | `2`, or `3` for uninfected → exposed → infectious |
+| `e_mult` | exposed-state multipliers to fix, for `states = 3`; `NA` = estimate, `NULL` = estimate all |
+| `birth` | birth timesteps, a numeric vector named by `id`; those badgers start susceptible at birth |
+| `init_starts` | optimiser starts per chain; every chain begins from the best optimum found |
+| `init_jitter` | sd of a seeded perturbation of each chain's starting point; `0` = all chains start together |
 | `metric` | path to an inverse mass matrix CSV |
 | `write_metric` | path to write the metric used |
 | `target_acc` | target acceptance during adaptation |
@@ -124,6 +133,55 @@ plain `rw1`, which leaves the level of the year series unidentified, and Beta
 accuracy priors, whose shape floor at 0.5 distorts the requested moments
 (culture Sp: asked for a mean of 0.999, got `Beta(3.26, 0.5)`, mean 0.867).
 Asking for one by name is an error, not a silent substitution.
+
+## Three states (SEI)
+
+`states = 3` splits infected into exposed and infectious:
+
+```r
+fit <- badger_hmm(test_mat, model = "inferred", states = 3L,
+                  birth = birth, chains = 4L, init_starts = 8L,
+                  traj_draws = 250L, traj_mode = "sample")
+```
+
+An uninfected badger becomes exposed with the same seasonal/yearly hazard as in
+the two-state model. An exposed badger becomes infectious with a constant
+per-timestep hazard `tau`. Infectious is absorbing. `rho` is the share of
+badgers infected at first capture that are already infectious.
+
+Each assay has a multiplier on its sensitivity for exposed badgers:
+
+    P(+ | exposed) = e_mult[k] * Se[k]
+
+with a Uniform(0, 1) prior (same form as `theta * rho` in the iFFBS badger
+model). `e_mult` can fix some or all of them. With all six at 1 the model is
+the two-state one.
+
+Extra outputs:
+
+| element | with `states = 3` |
+|---|---|
+| `p_infected` | `p_infected` is P(exposed or infectious); also `p_exposed`, `p_infectious` |
+| `prevalence` | also `prevalence_infectious` |
+| `trajectories` | also `infectious_time` |
+| `prevalence_infectious_draws` | per-draw infectious prevalence |
+| `parameters`, `draws` | also `tau`, `rho`, `e_mult[k]` |
+
+Notes from fitting the Woodchester data:
+
+- Use `birth` if you have it. Without it the fit puts about a third of badgers
+  in the exposed state at first capture (42% infected by last capture). With
+  birth quarters for cubs and yearlings it agrees with the full model: exposed
+  badgers respond to the immunological tests but not culture.
+- The posterior still has a small second mode that chains get stuck in.
+  `init_starts = 8` starts every chain from the best of eight optimiser runs
+  and prints the optima. `init_jitter = 1` starts chains apart instead, which
+  is how to check for the problem (large `rhat`). `badger_keep_chains()` drops
+  chains afterwards.
+- `traj_mode = "sample"` works for both models.
+
+`inst/scripts/trajectories_si_sei.R` fits SI and SEI and writes the `sql e2e`
+result files.
 
 ## The year model
 
