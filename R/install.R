@@ -6,7 +6,8 @@
 # built by CI and attached to a GitHub release. The package itself ships no
 # binary; it fetches the right one on first use into a user cache directory.
 
-TEST2INF_RELEASE_TAG <- "latest"
+# Pinned so a package version always runs the same binary.
+TEST2INF_RELEASE_TAG <- "v0.2.0"
 TEST2INF_REPO <- "EvoArt/test2inf-cli"
 
 #' The platform tag this machine needs
@@ -44,7 +45,8 @@ badger_cache_dir <- function() {
 #' Called automatically by [badger_hmm()] on first use unless
 #' `BADGERINFER_NO_DOWNLOAD` is set, in which case it must be run explicitly.
 #'
-#' @param tag Release tag to install from; `"latest"` by default.
+#' @param tag Release tag to install from; by default the release this package
+#'   version was tested with. `"latest"` fetches the newest release.
 #' @param force Reinstall even if a binary is already present.
 #' @param quiet Suppress progress messages.
 #' @return Path to the installed executable, invisibly.

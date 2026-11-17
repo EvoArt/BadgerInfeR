@@ -103,7 +103,7 @@ given.
 | `badger_platform()` | print OS, arch, and whether a binary was found |
 | `badger_platform_tag()` | platform string used for release assets |
 | `badger_cache_dir()` | where downloaded bundles are kept |
-| `install_test2inf(tag = "latest", force = FALSE, quiet = FALSE)` | download and install the binary |
+| `install_test2inf(tag = "v0.2.0", force = FALSE, quiet = FALSE)` | download and install the binary (the default tag is the release this package version is pinned to) |
 
 `BADGER_TESTS`, `BADGER_SE`, `BADGER_SP`: test names and Table 1 values, in
 column order. `BADGER_CULTURE` is culture's index within them.

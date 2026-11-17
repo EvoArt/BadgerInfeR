@@ -9,7 +9,10 @@
 #' Resolution order:
 #' 1. the `TEST2INF_BIN` environment variable, if it points at a real file;
 #' 2. `inst/bin/` inside the installed package;
-#' 3. a `dist/bin/` directory beside the working directory (development layout).
+#' 3. a `dist/bin/` directory beside the working directory (development layout);
+#' 4. the pinned test2inf release in [badger_cache_dir()], downloaded by
+#'    [install_test2inf()] if missing. With `BADGERINFER_NO_DOWNLOAD` set, the
+#'    newest cached release of any tag is used instead.
 #'
 #' @return Absolute path to the executable.
 #' @export
@@ -31,11 +34,15 @@ badger_binary <- function() {
   if (file.exists(dev)) return(normalizePath(dev))
 
   # A bundle downloaded by install_test2inf() on a previous run. Cache
-  # directories are named "<platform>-<tag>"; prefer the most recently written,
-  # so an upgrade takes effect without the user clearing anything.
+  # directories are named "<platform>-<tag>". Use the pinned release if it is
+  # there; otherwise fetch it, so an older cached binary is never picked up.
   plat <- badger_platform_tag()
   if (!is.na(plat)) {
     root <- badger_cache_dir()
+    pinned <- file.path(root, paste0(plat, "-", TEST2INF_RELEASE_TAG), "bin", exe_name)
+    if (file.exists(pinned)) return(normalizePath(pinned))
+  }
+  if (!is.na(plat) && nzchar(Sys.getenv("BADGERINFER_NO_DOWNLOAD", ""))) {
     hits <- list.files(root, pattern = paste0("^", plat, "-"), full.names = TRUE)
     hits <- file.path(hits, "bin", exe_name)
     hits <- hits[file.exists(hits)]

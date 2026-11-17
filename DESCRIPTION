@@ -1,7 +1,7 @@
 Package: BadgerInfeR
 Type: Package
 Title: Badger Diagnostic HMM Inference via a Standalone Binary
-Version: 0.1.0
+Version: 0.2.0
 Authors@R: person("Arthur", "Newbury", email = "a.r.newbury@exeter.ac.uk",
     role = c("aut", "cre"))
 Description: In-house interface to the badger diagnostic Hidden Markov Model,
@@ -9,9 +9,9 @@ Description: In-house interface to the badger diagnostic Hidden Markov Model,
     session. Latent infection status is inferred on a regular time grid from
     imperfect test results, with sensitivity and specificity either fixed at
     published values or estimated, and culture specificity optionally pinned
-    to one. Deliberately restricted to the four model variants used in the
-    project's current comparison. Requires no Julia and no R-side compilation
-    on the target machine.
+    to one. Fits the two-state (SI) model in four variants and a three-state
+    (SEI) model, with optional birth times. Requires no Julia and no R-side
+    compilation on the target machine.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
